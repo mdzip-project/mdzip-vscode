@@ -1,0 +1,72 @@
+{
+  "name": "mdzip-vscode",
+  "displayName": "MDZip (.mdz) Editor",
+  "description": "Read and write MDZip (.mdz) files including packaged images. Single document mode.",
+  "version": "0.1.0",
+  "publisher": "mdzip-project",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mdzip-project/mdzip-vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "mdzip",
+    "mdz",
+    "markdown",
+    "zip",
+    "document"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "mdzip.mdzEditor",
+        "displayName": "MDZip Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.mdz"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "mdzip.newFile",
+        "title": "MDZip: New .mdz Document",
+        "category": "MDZip"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "mdzip.newFile"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "npm run compile && node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.39",
+    "@types/vscode": "^1.116.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "marked": "^15.0.12",
+    "mdzip-core-js": "^1.1.0"
+  }
+}

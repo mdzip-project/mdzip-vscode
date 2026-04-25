@@ -1,0 +1,194 @@
+/* MDZip Editor — webview styles */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  background-color: var(--vscode-editor-background, #1e1e1e);
+  color: var(--vscode-editor-foreground, #d4d4d4);
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+}
+
+/* ── Toolbar ── */
+#toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  background: var(--vscode-tab-activeBackground, #252526);
+  border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  min-height: 36px;
+}
+
+#file-label {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #858585);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 50%;
+}
+
+#toolbar-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+#toolbar-buttons button {
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--vscode-button-secondaryForeground, #cccccc);
+  border: 1px solid var(--vscode-button-secondaryBackground, #3c3c3c);
+  border-radius: 3px;
+  transition: background 0.15s;
+}
+
+#toolbar-buttons button.active {
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #ffffff);
+  border-color: var(--vscode-button-background, #0e639c);
+}
+
+#toolbar-buttons button:hover:not(.active) {
+  background: var(--vscode-button-secondaryHoverBackground, #505050);
+}
+
+/* ── Panes ── */
+.pane {
+  display: none;
+  height: calc(100vh - 44px);
+  overflow: auto;
+}
+
+.pane.active {
+  display: block;
+}
+
+/* ── Preview ── */
+#preview-content {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 32px 48px;
+  line-height: 1.7;
+}
+
+#preview-content h1,
+#preview-content h2,
+#preview-content h3,
+#preview-content h4,
+#preview-content h5,
+#preview-content h6 {
+  color: var(--vscode-editor-foreground, #d4d4d4);
+  margin-top: 1.4em;
+  margin-bottom: 0.4em;
+  line-height: 1.3;
+}
+
+#preview-content h1 { font-size: 2em; border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c); padding-bottom: 0.25em; }
+#preview-content h2 { font-size: 1.5em; border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c); padding-bottom: 0.2em; }
+#preview-content h3 { font-size: 1.2em; }
+
+#preview-content p { margin: 0.8em 0; }
+
+#preview-content a {
+  color: var(--vscode-textLink-foreground, #3794ff);
+  text-decoration: none;
+}
+#preview-content a:hover { text-decoration: underline; }
+
+#preview-content code {
+  font-family: var(--vscode-editor-font-family, "Cascadia Code", monospace);
+  font-size: 0.9em;
+  background: var(--vscode-textCodeBlock-background, #1e1e1e);
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+#preview-content pre {
+  background: var(--vscode-textCodeBlock-background, #1e1e1e);
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-radius: 5px;
+  padding: 14px 18px;
+  overflow-x: auto;
+}
+
+#preview-content pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.88em;
+}
+
+#preview-content blockquote {
+  border-left: 4px solid var(--vscode-textBlockQuote-border, #0e639c);
+  margin: 1em 0;
+  padding: 0.5em 1em;
+  color: var(--vscode-descriptionForeground, #858585);
+  background: var(--vscode-textBlockQuote-background, #1e1e1e);
+}
+
+#preview-content ul,
+#preview-content ol {
+  padding-left: 2em;
+  margin: 0.6em 0;
+}
+
+#preview-content li { margin: 0.2em 0; }
+
+#preview-content hr {
+  border: none;
+  border-top: 1px solid var(--vscode-panel-border, #3c3c3c);
+  margin: 1.5em 0;
+}
+
+#preview-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+}
+
+#preview-content th,
+#preview-content td {
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  padding: 6px 12px;
+  text-align: left;
+}
+
+#preview-content th {
+  background: var(--vscode-tab-activeBackground, #252526);
+  font-weight: 600;
+}
+
+#preview-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+
+/* ── Edit pane ── */
+#editor {
+  width: 100%;
+  height: 100%;
+  resize: none;
+  background: var(--vscode-editor-background, #1e1e1e);
+  color: var(--vscode-editor-foreground, #d4d4d4);
+  font-family: var(--vscode-editor-font-family, "Cascadia Code", "Consolas", monospace);
+  font-size: var(--vscode-editor-font-size, 14px);
+  line-height: 1.6;
+  border: none;
+  outline: none;
+  padding: 24px 32px;
+  tab-size: 2;
+}
