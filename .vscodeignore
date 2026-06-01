@@ -6,3 +6,16 @@ src/**
 .github/**
 tsconfig.json
 **/*.map
+*.vsix
+*.zip
+**/*.zip
+*.code-workspace
+*.mdz
+**/*.mdz
+/image.png
+design/**
+
+# Only ship the bundled extension entrypoint from dist.
+dist/**
+!dist/extension.js
+!dist/mdz-mcp-server.js

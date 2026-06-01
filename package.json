@@ -2,7 +2,8 @@
   "name": "mdzip-vscode",
   "displayName": "MDZip (.mdz) Editor",
   "description": "Read and write MDZip (.mdz) files including packaged images. Single document mode.",
-  "version": "0.1.0",
+  "version": "0.1.64",
+  "icon": "media/icons/mdzip-marketplace-icon.png",
   "publisher": "mdzip-project",
   "license": "Apache-2.0",
   "repository": {
@@ -10,7 +11,7 @@
     "url": "https://github.com/mdzip-project/mdzip-vscode"
   },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.116.0"
   },
   "categories": [
     "Other"
@@ -22,9 +23,29 @@
     "zip",
     "document"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "mdzip.bundled-mcp",
+        "label": "MDZip Bundled MCP Server"
+      }
+    ],
+    "languages": [
+      {
+        "id": "mdzip",
+        "extensions": [
+          ".mdz"
+        ],
+        "icon": {
+          "light": "media/icons/mdzip-explorer-icon.svg",
+          "dark": "media/icons/mdzip-explorer-icon.svg"
+        }
+      }
+    ],
     "customEditors": [
       {
         "viewType": "mdzip.mdzEditor",
@@ -35,6 +56,16 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "mdzip.mdEditor",
+        "displayName": "MDZip Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.md"
+          }
+        ],
+        "priority": "option"
       }
     ],
     "commands": [
@@ -42,29 +73,188 @@
         "command": "mdzip.newFile",
         "title": "MDZip: New .mdz Document",
         "category": "MDZip"
+      },
+      {
+        "command": "mdzip.convertMarkdownToMdz",
+        "title": "MDZip: Convert .md To .mdz",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.copyMcpConfigSnippet",
+        "title": "MDZip: Copy MCP Server Config Snippet",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.enableWorkspaceMcp",
+        "title": "MDZip: Enable Workspace MCP Server",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.enableUserMcp",
+        "title": "MDZip: Enable User MCP Server",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.openGettingStarted",
+        "title": "MDZip: Open Getting Started",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.openMcpServerStatus",
+        "title": "MDZip: Open MCP Server Status",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.openExtensionHelp",
+        "title": "MDZip: Open Extension Help",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.enableWorkspaceAgentInstructions",
+        "title": "MDZip: Enable Workspace Agent Instructions",
+        "category": "MDZip"
       }
     ],
     "menus": {
       "commandPalette": [
         {
           "command": "mdzip.newFile"
+        },
+        {
+          "command": "mdzip.convertMarkdownToMdz"
+        },
+        {
+          "command": "mdzip.copyMcpConfigSnippet"
+        },
+        {
+          "command": "mdzip.enableWorkspaceMcp"
+        },
+        {
+          "command": "mdzip.enableUserMcp"
+        },
+        {
+          "command": "mdzip.openGettingStarted"
+        },
+        {
+          "command": "mdzip.openMcpServerStatus"
+        },
+        {
+          "command": "mdzip.openExtensionHelp"
+        },
+        {
+          "command": "mdzip.enableWorkspaceAgentInstructions"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "mdzip.newFile",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation@10"
+        },
+        {
+          "command": "mdzip.convertMarkdownToMdz",
+          "when": "resourceExtname == .md",
+          "group": "navigation@11"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "mdzip.convertMarkdownToMdz",
+          "when": "resourceExtname == .md",
+          "group": "navigation"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "mdzip.convertMarkdownToMdz",
+          "when": "resourceExtname == .md"
         }
       ]
-    }
+    },
+    "walkthroughs": [
+      {
+        "id": "mdzip.gettingStarted",
+        "title": "Get Started With MDZip",
+        "description": "Open MDZip archives, trust the bundled MCP server when prompted, and optionally write shared or user MCP config.",
+        "steps": [
+          {
+            "id": "mdzip.gettingStarted.openMdz",
+            "title": "Open an .mdz file",
+            "description": "Open any `.mdz` file to browse archive contents, preview images, and edit markdown entry points.",
+            "completionEvents": [
+              "onView:mdzip.mdzEditor"
+            ]
+          },
+          {
+            "id": "mdzip.gettingStarted.trustBundledMcp",
+            "title": "Use the bundled MCP server",
+            "description": "The bundled MDZip MCP server is auto-discovered. If VS Code prompts you to trust or start it, approve the prompt, then use [Open MCP Server Status](command:mdzip.openMcpServerStatus) to confirm it is available.",
+            "completionEvents": [
+              "onCommand:mdzip.openMcpServerStatus"
+            ]
+          },
+          {
+            "id": "mdzip.gettingStarted.workspaceMcp",
+            "title": "Write workspace MCP config (optional)",
+            "description": "Use [Enable Workspace MCP Server](command:mdzip.enableWorkspaceMcp) if you want a shared `.vscode/mcp.json` for the current workspace.",
+            "completionEvents": [
+              "onCommand:mdzip.enableWorkspaceMcp"
+            ]
+          },
+          {
+            "id": "mdzip.gettingStarted.manualSnippet",
+            "title": "Copy manual MCP snippet (optional)",
+            "description": "Use [Copy MCP Server Config Snippet](command:mdzip.copyMcpConfigSnippet) when you want to paste the config into a user or remote `mcp.json`.",
+            "completionEvents": [
+              "onCommand:mdzip.copyMcpConfigSnippet"
+            ]
+          },
+          {
+            "id": "mdzip.gettingStarted.userMcp",
+            "title": "Write user MCP config (optional)",
+            "description": "Use [Enable User MCP Server](command:mdzip.enableUserMcp) if you want the MDZip MCP server in your user-profile MCP configuration.",
+            "completionEvents": [
+              "onCommand:mdzip.enableUserMcp"
+            ]
+          },
+          {
+            "id": "mdzip.gettingStarted.extensionHelp",
+            "title": "Reopen extension help",
+            "description": "Use [Open Extension Help](command:mdzip.openExtensionHelp) to jump back to the extension details or Extensions view if you need the bundled MCP setup surface again.",
+            "completionEvents": [
+              "onCommand:mdzip.openExtensionHelp"
+            ]
+          },
+          {
+            "id": "mdzip.gettingStarted.agentInstructions",
+            "title": "Enable workspace agent instructions (optional)",
+            "description": "Use [Enable Workspace Agent Instructions](command:mdzip.enableWorkspaceAgentInstructions) to write `.github/copilot-instructions.md` guidance that nudges agents to use `mdz_review_document` first for `.mdz` review tasks.",
+            "completionEvents": [
+              "onCommand:mdzip.enableWorkspaceAgentInstructions"
+            ]
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run bundle",
+    "bundle": "npm run bundle:extension && npm run bundle:mcp",
+    "bundle:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "bundle:mcp": "esbuild src/mdzMcpServer.ts --bundle --outfile=dist/mdz-mcp-server.js --format=cjs --platform=node --minify",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
     "lint": "eslint src --ext ts",
     "test": "npm run compile && node ./out/test/runTest.js"
   },
   "devDependencies": {
     "@types/node": "^20.19.39",
     "@types/vscode": "^1.116.0",
+    "esbuild": "^0.28.0",
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.4",
     "jszip": "^3.10.1",
     "marked": "^15.0.12",
     "mdzip-core-js": "^1.1.0"

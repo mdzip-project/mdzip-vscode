@@ -1,4 +1,17 @@
-node_modules
-dist
+node_modules/
+dist/
+out/
+.vscode-test/
+
+# Packaged outputs
 *.vsix
-.vscode-test
+*.tgz
+
+# Local scratch archives and docs
+*.zip
+*.mdz
+
+# Logs and OS noise
+*.log
+.DS_Store
+Thumbs.db
