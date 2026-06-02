@@ -2,8 +2,10 @@ import * as vscode from 'vscode';
 import {
   buildNewArchiveBytesWithTitle,
   buildNewArchiveWithTitle,
+  findOrphanedAssetPathsInArchive,
   openMdzArchive,
   readBinaryFileFromArchive,
+  removeFilesFromArchive,
   updateBinaryInArchive,
   updateManifestTitleInArchive,
   updateMarkdownInArchive,
@@ -223,6 +225,62 @@ export class MdzDocument implements vscode.CustomDocument {
     this._onDidChange.fire({ reason: 'edit' });
   }
 
+  /** Return orphaned image assets using the live editor buffer, including unsaved text edits. */
+  public async findCurrentOrphanedAssetPaths(): Promise<string[]> {
+    if (this._sourceFormat === 'markdown') {
+      return [];
+    }
+
+    const bytesWithPendingText = await this._archiveBytesWithPendingText();
+    return findOrphanedAssetPathsInArchive(bytesWithPendingText, this.content.entryPoint);
+  }
+
+  /** Remove an orphaned image asset without discarding pending text edits. */
+  public async removeOrphanedAsset(archivePath: string): Promise<boolean> {
+    if (this._sourceFormat === 'markdown') {
+      return false;
+    }
+
+    const target = this.content.paths.find(
+      (entry) => entry.path.toLowerCase() === archivePath.toLowerCase()
+    );
+    if (!target || !target.isImage) {
+      return false;
+    }
+
+    const currentMarkdown = this._currentMarkdown;
+    const currentMarkdownPath = this._currentMarkdownPath;
+    const currentPathType = this._currentPathType;
+    const bytesWithPendingText = await this._archiveBytesWithPendingText();
+    const orphanedAssetPaths = await findOrphanedAssetPathsInArchive(
+      bytesWithPendingText,
+      this.content.entryPoint
+    );
+    const orphanedAssetPathSet = new Set(orphanedAssetPaths.map((path) => path.toLowerCase()));
+    if (!orphanedAssetPathSet.has(target.path.toLowerCase())) {
+      return false;
+    }
+
+    const nextBytes = await removeFilesFromArchive(bytesWithPendingText, [target.path]);
+
+    this._archiveBytes = nextBytes;
+    this._content = await openMdzArchive(nextBytes);
+
+    if (currentMarkdownPath.toLowerCase() === target.path.toLowerCase()) {
+      this._currentMarkdown = this._content.markdownText;
+      this._currentMarkdownPath = this._content.entryPoint;
+      this._currentPathType = 'markdown';
+    } else {
+      this._currentMarkdown = currentMarkdown;
+      this._currentMarkdownPath = currentMarkdownPath;
+      this._currentPathType = currentPathType;
+    }
+
+    this._isDirty = true;
+    this._onDidChange.fire({ reason: 'edit' });
+    return true;
+  }
+
   /** Update manifest title and keep editor content in sync without dropping pending markdown edits. */
   public async setTitle(newTitle: string): Promise<void> {
     const nextBytes = await updateManifestTitleInArchive(this._archiveBytes, newTitle);
@@ -260,6 +318,19 @@ export class MdzDocument implements vscode.CustomDocument {
   public async save(): Promise<void> {
     await this.saveAs(this.uri);
     this._isDirty = false;
+  }
+
+  /** Return archive bytes with any editable text buffer applied. */
+  private async _archiveBytesWithPendingText(): Promise<Uint8Array> {
+    if (!isEditableTextPath(this._currentPathType, this._currentMarkdownPath)) {
+      return this._archiveBytes;
+    }
+
+    return updateMarkdownInArchive(
+      this._archiveBytes,
+      this._currentMarkdownPath,
+      this._currentMarkdown
+    );
   }
 
   /** Persist the document to a different URI (Save As). */

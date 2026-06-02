@@ -3,6 +3,10 @@ import * as path from 'path';
 import { MdzEditorProvider } from './mdzEditorProvider';
 import { fileBaseNameFromPath, suggestedTitleFromMarkdown } from './shared/editorMetadata';
 
+const BUNDLED_MCP_SERVER_LABEL = 'MDZip MCP Server';
+const BUNDLED_MCP_SERVER_KEY = 'MDZip';
+const LEGACY_BUNDLED_MCP_SERVER_KEY = 'mdzip';
+
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(MdzEditorProvider.register(context));
 
@@ -18,7 +22,7 @@ export function activate(context: vscode.ExtensionContext): void {
       provideMcpServerDefinitions() {
         return [
           new vscode.McpStdioServerDefinition(
-            'MDZip Bundled MCP Server',
+            BUNDLED_MCP_SERVER_LABEL,
             process.execPath,
             [bundledServerPath],
             {},
@@ -37,7 +41,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const snippet = JSON.stringify(
         {
           servers: {
-            mdzip: bundledServerConfig,
+            [BUNDLED_MCP_SERVER_KEY]: bundledServerConfig,
           },
         },
         null,
@@ -75,7 +79,7 @@ export function activate(context: vscode.ExtensionContext): void {
         config.servers = {};
       }
 
-      config.servers.mdzip = bundledServerConfig;
+      upsertBundledMcpServer(config.servers, bundledServerConfig);
 
       await vscode.workspace.fs.createDirectory(vscodeDir);
       await vscode.workspace.fs.writeFile(
@@ -95,7 +99,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const editor = vscode.window.activeTextEditor;
       if (!opened || !editor) {
         await vscode.env.clipboard.writeText(
-          JSON.stringify({ servers: { mdzip: bundledServerConfig } }, null, 2)
+          JSON.stringify({ servers: { [BUNDLED_MCP_SERVER_KEY]: bundledServerConfig } }, null, 2)
         );
         vscode.window.showWarningMessage(
           'Could not open the user MCP configuration automatically. The MDZip MCP config snippet was copied to the clipboard instead.'
@@ -161,6 +165,18 @@ export function activate(context: vscode.ExtensionContext): void {
           'Open the Extensions view and search for "MDZip (.mdz) Editor" to review extension details and bundled MCP setup.'
         );
       }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.openDocumentation', async () => {
+      await vscode.env.openExternal(vscode.Uri.parse('https://mdzip.org/spec.html'));
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.openWebsite', async () => {
+      await vscode.env.openExternal(vscode.Uri.parse('https://mdzip.org'));
     })
   );
 
@@ -418,20 +434,38 @@ function mergeMcpConfigText(
   if (!parsed.servers || typeof parsed.servers !== 'object') {
     parsed.servers = {};
   }
-  parsed.servers.mdzip = serverConfig;
+  upsertBundledMcpServer(parsed.servers, serverConfig);
   return JSON.stringify(parsed, null, 2);
+}
+
+function upsertBundledMcpServer(
+  servers: Record<string, unknown>,
+  serverConfig: { type: 'stdio'; command: string; args: string[] }
+): void {
+  const legacyConfig = servers[LEGACY_BUNDLED_MCP_SERVER_KEY];
+  servers[BUNDLED_MCP_SERVER_KEY] = serverConfig;
+
+  if (
+    legacyConfig &&
+    typeof legacyConfig === 'object' &&
+    JSON.stringify(legacyConfig) === JSON.stringify(serverConfig)
+  ) {
+    delete servers[LEGACY_BUNDLED_MCP_SERVER_KEY];
+  }
 }
 
 function buildWorkspaceAgentInstructionsBlock(): string {
   return [
     '## MDZip MCP Review Guidance',
     '',
-    'When reviewing, summarizing, or analyzing `.mdz` files:',
+    'When reviewing, summarizing, or editing `.mdz` files:',
     '',
     '1. Call `mdz_review_document` first with the `.mdz` `archivePath`.',
-    '2. Use the returned markdown text and MCP image payloads together in the same analysis.',
-    '3. Do not extract archive entries to disk unless the user explicitly asks for extraction.',
-    '4. Use lower-level tools (`mdz_list_entries`, `mdz_read_text`, `mdz_read_image`) only for follow-up detail checks.',
+    '2. Use the returned `resolvedMarkdownPath`, `canonicalEntrypointPath`, and `entrypointSource` fields before deciding on write actions.',
+    '3. For canonical markdown updates, call `upsert_canonical_document` instead of editing archive entries manually.',
+    '4. If a tool returns a machine-readable error with `nextAction`, follow that next action and retry.',
+    '5. Do not extract archive entries to disk unless the user explicitly asks for extraction.',
+    '6. Use lower-level tools (`mdz_list_entries`, `mdz_read_text`, `mdz_read_image`) only for follow-up detail checks.',
     '',
   ].join('\n');
 }

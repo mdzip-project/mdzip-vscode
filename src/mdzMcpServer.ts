@@ -1,17 +1,54 @@
 import { promises as fs } from 'fs';
-import * as path from 'path';
-import JSZip from 'jszip';
 import { MdzArchiveCore, MDZ_IMAGE_MIME_TYPES } from 'mdzip-core-js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 type ToolArgs = Record<string, unknown> | undefined;
+type EntryPointSource = 'requested' | 'manifest' | 'fallback-single-markdown';
+type ToolContent = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
+type ToolResult = {
+  content: ToolContent[];
+  isError?: boolean;
+};
+
+type ToolErrorPayload = {
+  code: string;
+  message: string;
+  nextAction: string;
+  candidatePaths?: string[];
+};
+
+type ResolveContext = {
+  requestedEntryPath: string | null;
+  resolvedMarkdownPath: string;
+  canonicalEntrypointPath: string | null;
+  entrypointSource: EntryPointSource;
+  isCanonicalRead: boolean;
+  isAmbiguous: boolean;
+  recommendedNextAction: string;
+};
+
+type ReferencedImage = {
+  path: string;
+  mimeType: string;
+  bytes: Uint8Array;
+  alt: string;
+};
+
+class MdzToolError extends Error {
+  public readonly payload: ToolErrorPayload;
+
+  public constructor(payload: ToolErrorPayload) {
+    super(payload.message);
+    this.payload = payload;
+  }
+}
 
 const server = new Server(
   {
     name: 'mdzip-mcp',
-    version: '0.1.0',
+    version: '0.2.0',
   },
   {
     capabilities: {
@@ -26,7 +63,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'mdz_review_document',
         description:
-          'Preferred first call for review/analyze/summarize requests on an .mdz file. Returns markdown text and referenced images together as MCP content (no extraction).',
+          'Preferred first call for review/analyze/summarize requests on an .mdz file. Returns markdown text and referenced images plus canonical/entrypoint resolution metadata.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -37,7 +74,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             entryPath: {
               type: 'string',
               description:
-                'Optional archive-relative markdown path. When omitted, the server resolves the archive entry point.',
+                'Optional archive-relative markdown path. When omitted, the server resolves manifest-first canonical markdown.',
             },
             maxImages: {
               type: 'number',
@@ -49,8 +86,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'upsert_canonical_document',
+        description:
+          'Preferred write path for markdown updates. Updates manifest-first canonical markdown and returns changed paths plus post-write validation.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            archivePath: {
+              type: 'string',
+              description: 'Absolute or workspace-relative path to the .mdz file.',
+            },
+            content: {
+              type: 'string',
+              description: 'New markdown content for the canonical entrypoint document.',
+            },
+          },
+          required: ['archivePath', 'content'],
+        },
+      },
+      {
         name: 'mdz_list_entries',
-        description: 'List all non-directory entries inside an .mdz archive.',
+        description:
+          'List all non-directory entries inside an .mdz archive. Advanced inspection tool; start with mdz_review_document for default agent workflows.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -64,7 +121,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'mdz_read_text',
-        description: 'Read a UTF-8 text entry from an .mdz archive by archive-relative path.',
+        description:
+          'Read a UTF-8 text entry from an .mdz archive by archive-relative path. Advanced inspection tool; prefer mdz_review_document for first read.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -83,7 +141,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'mdz_read_image',
         description:
-          'Read an image entry from an .mdz archive and return it directly as MCP image content (no extraction required).',
+          'Read an image entry from an .mdz archive and return it directly as MCP image content (no extraction required). Advanced inspection tool.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -113,7 +171,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             entryPath: {
               type: 'string',
               description:
-                'Optional archive-relative markdown path. When omitted, the server resolves the archive entry point.',
+                'Optional archive-relative markdown path. When omitted, the server resolves manifest-first canonical markdown.',
             },
           },
           required: ['archivePath'],
@@ -126,23 +184,39 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
+  try {
+    return await handleToolCall(name, args);
+  } catch (error) {
+    return toToolErrorResult(name, error);
+  }
+});
+
+async function handleToolCall(name: string, args: ToolArgs): Promise<ToolResult> {
   switch (name) {
     case 'mdz_review_document': {
       const archivePath = stringArg(args, 'archivePath');
       const bytes = await fs.readFile(archivePath);
-      const zip = await JSZip.loadAsync(bytes);
+      const archive = await MdzArchiveCore.open(bytes);
 
       const requestedEntryPath = optionalStringArg(args, 'entryPath');
-      const markdownPath = requestedEntryPath || (await resolveEntryPoint(bytes));
-      const markdownEntry = findEntry(zip, markdownPath);
-
-      if (!markdownEntry) {
-        throw new Error(`Markdown entry not found: ${markdownPath}`);
+      const context = await resolveReadContext(archive, requestedEntryPath);
+      if (!archive.hasEntry(context.resolvedMarkdownPath)) {
+        throw toolError(
+          'ENTRY_NOT_FOUND',
+          `Markdown entry not found: ${context.resolvedMarkdownPath}`,
+          'Call mdz_list_entries to inspect archive paths, then retry mdz_review_document with a valid markdown entry path.',
+          listMarkdownPaths(archive)
+        );
       }
 
-      const markdown = await markdownEntry.async('text');
+      const markdown = await archive.readText(context.resolvedMarkdownPath);
       const maxImages = clampInteger(optionalNumberArg(args, 'maxImages') ?? 12, 1, 50);
-      const referencedImages = await collectReferencedImages(zip, markdownPath, markdown, maxImages);
+      const referencedImages = await collectReferencedImages(
+        archive,
+        context.resolvedMarkdownPath,
+        markdown,
+        maxImages
+      );
 
       const imageSummary = referencedImages.map((image) => ({
         path: image.path,
@@ -151,13 +225,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         altText: image.alt,
       }));
 
-      const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [
+      const content: ToolContent[] = [
         {
           type: 'text',
           text: JSON.stringify(
             {
               archivePath,
-              markdownEntryPath: MdzArchiveCore.normalizePath(markdownEntry.name),
+              requestedEntryPath: context.requestedEntryPath,
+              resolvedMarkdownPath: context.resolvedMarkdownPath,
+              canonicalEntrypointPath: context.canonicalEntrypointPath,
+              entrypointSource: context.entrypointSource,
+              isCanonicalRead: context.isCanonicalRead,
+              isAmbiguous: context.isAmbiguous,
+              recommendedNextAction: context.recommendedNextAction,
               imageCount: referencedImages.length,
               maxImages,
               images: imageSummary,
@@ -183,22 +263,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content };
     }
 
+    case 'upsert_canonical_document': {
+      const archivePath = stringArg(args, 'archivePath');
+      const content = stringArg(args, 'content');
+
+      const bytes = await fs.readFile(archivePath);
+      const archive = await MdzArchiveCore.open(bytes);
+      const canonicalEntrypointPath = await resolveCanonicalEntrypointForWrite(archive);
+
+      const mutation = await MdzArchiveCore.addFile(bytes, canonicalEntrypointPath, content);
+      const nextBytes = new Uint8Array(await mutation.blob.arrayBuffer());
+      await fs.writeFile(archivePath, nextBytes);
+
+      const validation = await MdzArchiveCore.validate(nextBytes);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                archivePath,
+                canonicalEntrypointPath,
+                changedPaths: [canonicalEntrypointPath],
+                postWriteValidation: {
+                  isValid: validation.isValid,
+                  errors: validation.errors,
+                  warnings: validation.warnings,
+                },
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+
     case 'mdz_list_entries': {
       const archivePath = stringArg(args, 'archivePath');
-      const zip = await loadArchive(archivePath);
+      const archive = await loadArchive(archivePath);
 
-      const entries = Object.values(zip.files)
-        .filter((entry) => !entry.dir)
-        .map((entry) => {
-          const path = MdzArchiveCore.normalizePath(entry.name);
-          const ext = path.split('.').pop()?.toLowerCase() ?? '';
-          return {
-            path,
-            isMarkdown: MdzArchiveCore.isMarkdownFile(path),
-            isImage: ext in MDZ_IMAGE_MIME_TYPES,
-          };
-        })
-        .sort((a, b) => a.path.localeCompare(b.path));
+      const entries = archive
+        .listEntries()
+        .filter((entry) => !entry.isDirectory)
+        .map(({ path, isMarkdown, isImage }) => ({ path, isMarkdown, isImage }));
 
       return {
         content: [
@@ -213,14 +321,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'mdz_read_text': {
       const archivePath = stringArg(args, 'archivePath');
       const entryPath = stringArg(args, 'entryPath');
-      const zip = await loadArchive(archivePath);
-      const entry = findEntry(zip, entryPath);
+      const archive = await loadArchive(archivePath);
+      const resolvedPath = findExistingPath(archive, entryPath);
 
-      if (!entry) {
-        throw new Error(`Entry not found: ${entryPath}`);
+      if (!resolvedPath) {
+        throw toolError(
+          'ENTRY_NOT_FOUND',
+          `Entry not found: ${entryPath}`,
+          'Call mdz_list_entries to inspect valid paths, then retry mdz_read_text with one exact archive path.'
+        );
       }
 
-      const text = await entry.async('text');
+      const text = await archive.readText(resolvedPath);
       return {
         content: [
           {
@@ -234,21 +346,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'mdz_read_image': {
       const archivePath = stringArg(args, 'archivePath');
       const entryPath = stringArg(args, 'entryPath');
-      const zip = await loadArchive(archivePath);
-      const entry = findEntry(zip, entryPath);
+      const archive = await loadArchive(archivePath);
+      const normalizedEntryPath = findExistingPath(archive, entryPath);
 
-      if (!entry) {
-        throw new Error(`Entry not found: ${entryPath}`);
+      if (!normalizedEntryPath) {
+        throw toolError(
+          'ENTRY_NOT_FOUND',
+          `Entry not found: ${entryPath}`,
+          'Call mdz_list_entries to inspect valid paths, then retry mdz_read_image with a valid image path.'
+        );
       }
 
-      const normalizedEntryPath = MdzArchiveCore.normalizePath(entry.name);
       const ext = normalizedEntryPath.split('.').pop()?.toLowerCase() ?? '';
       const mimeType = MDZ_IMAGE_MIME_TYPES[ext];
       if (!mimeType) {
-        throw new Error(`Entry is not a recognized image type: ${entryPath}`);
+        throw toolError(
+          'ENTRY_NOT_IMAGE',
+          `Entry is not a recognized image type: ${entryPath}`,
+          'Retry mdz_read_image with a supported image path (png, jpg, jpeg, gif, webp, svg, avif, ico).'
+        );
       }
 
-      const bytes = await entry.async('uint8array');
+      const bytes = await archive.readBytes(normalizedEntryPath);
       const base64 = Buffer.from(bytes).toString('base64');
 
       return {
@@ -269,18 +388,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'mdz_read_markdown_embedded_images': {
       const archivePath = stringArg(args, 'archivePath');
       const bytes = await fs.readFile(archivePath);
-      const zip = await JSZip.loadAsync(bytes);
+      const archive = await MdzArchiveCore.open(bytes);
 
       const requestedEntryPath = optionalStringArg(args, 'entryPath');
-      const markdownPath = requestedEntryPath || (await resolveEntryPoint(bytes));
-      const markdownEntry = findEntry(zip, markdownPath);
+      const context = await resolveReadContext(archive, requestedEntryPath);
 
-      if (!markdownEntry) {
-        throw new Error(`Markdown entry not found: ${markdownPath}`);
+      if (!archive.hasEntry(context.resolvedMarkdownPath)) {
+        throw toolError(
+          'ENTRY_NOT_FOUND',
+          `Markdown entry not found: ${context.resolvedMarkdownPath}`,
+          'Call mdz_list_entries to inspect archive paths, then retry with a valid markdown entry path.',
+          listMarkdownPaths(archive)
+        );
       }
 
-      const markdown = await markdownEntry.async('text');
-      const rewritten = await rewriteMarkdownImagePathsToDataUrls(zip, markdownPath, markdown);
+      const markdown = await archive.readText(context.resolvedMarkdownPath);
+      const rewritten = await rewriteMarkdownImagePathsToDataUrls(archive, context.resolvedMarkdownPath, markdown);
 
       return {
         content: [
@@ -293,32 +416,169 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     default:
-      throw new Error(`Unknown tool: ${name}`);
+      throw toolError('UNKNOWN_TOOL', `Unknown tool: ${name}`, 'Retry with one of the advertised mdz_* tools.');
   }
-});
-
-async function loadArchive(archivePath: string): Promise<JSZip> {
-  const bytes = await fs.readFile(archivePath);
-  return JSZip.loadAsync(bytes);
 }
 
-function findEntry(zip: JSZip, archivePath: string): JSZip.JSZipObject | undefined {
-  const normalized = MdzArchiveCore.normalizePath(archivePath);
+async function resolveReadContext(
+  archive: MdzArchiveCore,
+  requestedEntryPath?: string
+): Promise<ResolveContext> {
+  const markdownPaths = listMarkdownPaths(archive);
+  const canonicalEntrypointPath = await resolveCanonicalEntrypoint(archive);
 
-  const direct = zip.files[normalized];
-  if (direct && !direct.dir) {
-    return direct;
+  if (requestedEntryPath) {
+    const requestedNormalized = MdzArchiveCore.normalizePath(requestedEntryPath);
+    const requestedPath = findExistingPath(archive, requestedNormalized);
+    if (!requestedPath || !MdzArchiveCore.isMarkdownFile(requestedPath)) {
+      throw toolError(
+        'INVALID_MARKDOWN_ENTRY_PATH',
+        `Requested markdown entry is missing or not markdown: ${requestedEntryPath}`,
+        'Retry mdz_review_document with a valid markdown path, or omit entryPath to let the server resolve manifest-first canonical markdown.',
+        markdownPaths
+      );
+    }
+
+    return {
+      requestedEntryPath: requestedPath,
+      resolvedMarkdownPath: requestedPath,
+      canonicalEntrypointPath,
+      entrypointSource: 'requested',
+      isCanonicalRead: canonicalEntrypointPath
+        ? requestedPath.toLowerCase() === canonicalEntrypointPath.toLowerCase()
+        : false,
+      isAmbiguous: false,
+      recommendedNextAction:
+        'If you need to update canonical markdown, call upsert_canonical_document with archivePath and new content.',
+    };
   }
 
-  return Object.values(zip.files).find(
-    (entry) => !entry.dir && MdzArchiveCore.normalizePath(entry.name).toLowerCase() === normalized.toLowerCase()
+  if (canonicalEntrypointPath) {
+    return {
+      requestedEntryPath: null,
+      resolvedMarkdownPath: canonicalEntrypointPath,
+      canonicalEntrypointPath,
+      entrypointSource: 'manifest',
+      isCanonicalRead: true,
+      isAmbiguous: false,
+      recommendedNextAction:
+        'Call upsert_canonical_document to update canonical markdown, or use mdz_read_text for targeted non-canonical text entries.',
+    };
+  }
+
+  if (markdownPaths.length === 1) {
+    return {
+      requestedEntryPath: null,
+      resolvedMarkdownPath: markdownPaths[0],
+      canonicalEntrypointPath: null,
+      entrypointSource: 'fallback-single-markdown',
+      isCanonicalRead: false,
+      isAmbiguous: false,
+      recommendedNextAction:
+        'Set manifest.entryPoint to this markdown path for deterministic canonical behavior across tools and agents.',
+    };
+  }
+
+  if (markdownPaths.length === 0) {
+    throw toolError(
+      'NO_MARKDOWN_ENTRIES',
+      'Archive has no markdown entries to read.',
+      'Add a markdown file to the archive (for example index.md), then retry mdz_review_document.',
+      []
+    );
+  }
+
+  throw toolError(
+    'AMBIGUOUS_MARKDOWN_ENTRYPOINT',
+    'Multiple markdown entries exist and no canonical manifest entrypoint could be resolved.',
+    'Specify entryPath explicitly for this read, and set manifest.entryPoint to make future reads deterministic.',
+    markdownPaths
   );
+}
+
+async function resolveCanonicalEntrypointForWrite(archive: MdzArchiveCore): Promise<string> {
+  const markdownPaths = listMarkdownPaths(archive);
+  const canonicalEntrypointPath = await resolveCanonicalEntrypoint(archive);
+
+  if (canonicalEntrypointPath) {
+    return canonicalEntrypointPath;
+  }
+
+  if (markdownPaths.length === 0) {
+    throw toolError(
+      'NO_MARKDOWN_ENTRIES',
+      'Cannot update canonical markdown because the archive has no markdown entries.',
+      'Add a markdown entry and set manifest.entryPoint, then retry upsert_canonical_document.'
+    );
+  }
+
+  if (markdownPaths.length > 1) {
+    throw toolError(
+      'AMBIGUOUS_CANONICAL_ENTRYPOINT',
+      'Cannot update canonical markdown because manifest.entryPoint is missing or invalid and multiple markdown entries exist.',
+      'Set manifest.entryPoint to the canonical markdown path, then retry upsert_canonical_document.',
+      markdownPaths
+    );
+  }
+
+  throw toolError(
+    'MISSING_CANONICAL_ENTRYPOINT',
+    'Cannot update canonical markdown because manifest.entryPoint is missing.',
+    `Set manifest.entryPoint to "${markdownPaths[0]}" and retry upsert_canonical_document.`,
+    markdownPaths
+  );
+}
+
+async function resolveCanonicalEntrypoint(archive: MdzArchiveCore): Promise<string | null> {
+  const manifest = await archive.readManifest();
+  const manifestEntryPoint = typeof manifest?.entryPoint === 'string' ? manifest.entryPoint.trim() : '';
+  if (!manifestEntryPoint) {
+    return null;
+  }
+
+  const normalized = MdzArchiveCore.normalizePath(manifestEntryPoint);
+  const resolvedPath = findExistingPath(archive, normalized);
+  if (!resolvedPath) {
+    return null;
+  }
+  if (!MdzArchiveCore.isMarkdownFile(resolvedPath)) {
+    return null;
+  }
+
+  return resolvedPath;
+}
+
+async function loadArchive(archivePath: string): Promise<MdzArchiveCore> {
+  const bytes = await fs.readFile(archivePath);
+  return MdzArchiveCore.open(bytes);
+}
+
+function listMarkdownPaths(archive: MdzArchiveCore): string[] {
+  return archive
+    .listEntries()
+    .filter((entry) => !entry.isDirectory)
+    .map((entry) => entry.path)
+    .filter((entryPath) => MdzArchiveCore.isMarkdownFile(entryPath))
+    .filter((entryPath, index, values) => values.indexOf(entryPath) === index)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function findExistingPath(archive: MdzArchiveCore, archivePath: string): string | undefined {
+  const entry = archive.findEntry(archivePath);
+  if (!entry || entry.dir) {
+    return undefined;
+  }
+  return MdzArchiveCore.normalizePath(entry.name);
 }
 
 function stringArg(args: ToolArgs, key: string): string {
   const value = args?.[key];
   if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`Missing required string argument: ${key}`);
+    throw toolError(
+      'MISSING_REQUIRED_ARGUMENT',
+      `Missing required string argument: ${key}`,
+      `Retry the tool call and provide a non-empty string for ${key}.`
+    );
   }
   return value;
 }
@@ -351,17 +611,11 @@ function clampInteger(value: number, min: number, max: number): number {
   return rounded;
 }
 
-async function resolveEntryPoint(bytes: Uint8Array): Promise<string> {
-  const archive = await MdzArchiveCore.open(bytes);
-  return archive.resolveEntryPoint();
-}
-
 async function rewriteMarkdownImagePathsToDataUrls(
-  zip: JSZip,
+  archive: MdzArchiveCore,
   markdownPath: string,
   markdown: string
 ): Promise<string> {
-  const markdownDir = directoryName(markdownPath);
   const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
 
   const matches = Array.from(markdown.matchAll(imagePattern));
@@ -379,23 +633,17 @@ async function rewriteMarkdownImagePathsToDataUrls(
     }
 
     const cleanTarget = stripQueryAndHash(stripAngleBrackets(rawTarget));
-    const candidates = resolveArchivePathCandidates(markdownDir, cleanTarget);
-    const imageEntry = candidates
-      .map((candidate) => findEntry(zip, candidate))
-      .find((entry): entry is JSZip.JSZipObject => Boolean(entry));
+    const normalizedImagePath = resolveImageReferencePath(archive, markdownPath, cleanTarget);
 
-    if (!imageEntry) {
+    if (!normalizedImagePath) {
       continue;
     }
 
-    const normalizedImagePath = MdzArchiveCore.normalizePath(imageEntry.name);
-    const ext = normalizedImagePath.split('.').pop()?.toLowerCase() ?? '';
-    const mimeType = MDZ_IMAGE_MIME_TYPES[ext];
+    const mimeType = mimeTypeForImagePath(normalizedImagePath);
     if (!mimeType) {
       continue;
     }
-
-    const base64 = await imageEntry.async('base64');
+    const base64 = await archive.readBase64(normalizedImagePath);
     const dataUrl = `data:${mimeType};base64,${base64}`;
     replacements.set(fullMatch, `![${alt}](${dataUrl})`);
   }
@@ -407,20 +655,12 @@ async function rewriteMarkdownImagePathsToDataUrls(
   return rewritten;
 }
 
-type ReferencedImage = {
-  path: string;
-  mimeType: string;
-  bytes: Uint8Array;
-  alt: string;
-};
-
 async function collectReferencedImages(
-  zip: JSZip,
+  archive: MdzArchiveCore,
   markdownPath: string,
   markdown: string,
   maxImages: number
 ): Promise<ReferencedImage[]> {
-  const markdownDir = directoryName(markdownPath);
   const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
   const results: ReferencedImage[] = [];
   const seen = new Set<string>();
@@ -437,27 +677,19 @@ async function collectReferencedImages(
     }
 
     const cleanTarget = stripQueryAndHash(stripAngleBrackets(rawTarget));
-    const candidates = resolveArchivePathCandidates(markdownDir, cleanTarget);
-    const imageEntry = candidates
-      .map((candidate) => findEntry(zip, candidate))
-      .find((entry): entry is JSZip.JSZipObject => Boolean(entry));
-
-    if (!imageEntry) {
+    const normalizedPath = resolveImageReferencePath(archive, markdownPath, cleanTarget);
+    if (!normalizedPath) {
       continue;
     }
-
-    const normalizedPath = MdzArchiveCore.normalizePath(imageEntry.name);
     if (seen.has(normalizedPath)) {
       continue;
     }
 
-    const ext = normalizedPath.split('.').pop()?.toLowerCase() ?? '';
-    const mimeType = MDZ_IMAGE_MIME_TYPES[ext];
+    const mimeType = mimeTypeForImagePath(normalizedPath);
     if (!mimeType) {
       continue;
     }
-
-    const bytes = await imageEntry.async('uint8array');
+    const bytes = await archive.readBytes(normalizedPath);
     results.push({ path: normalizedPath, mimeType, bytes, alt });
     seen.add(normalizedPath);
   }
@@ -465,20 +697,34 @@ async function collectReferencedImages(
   return results;
 }
 
-function directoryName(archivePath: string): string {
-  const normalized = MdzArchiveCore.normalizePath(archivePath);
-  const index = normalized.lastIndexOf('/');
-  if (index < 0) {
-    return '';
+function resolveImageReferencePath(
+  archive: MdzArchiveCore,
+  markdownPath: string,
+  target: string
+): string | undefined {
+  const normalizedTarget = target.replace(/\\/g, '/');
+  const candidates = [normalizedTarget.replace(/^\.\//, '')];
+
+  try {
+    candidates.push(MdzArchiveCore.resolvePath(markdownPath, normalizedTarget));
+  } catch {
+    // Invalid relative targets are ignored by the preview/read helpers.
   }
-  return normalized.slice(0, index + 1);
+
+  for (const candidate of candidates) {
+    const resolved = findExistingPath(archive, candidate);
+    if (!resolved || !mimeTypeForImagePath(resolved)) {
+      continue;
+    }
+    return resolved;
+  }
+
+  return undefined;
 }
 
-function resolveArchivePathCandidates(baseDir: string, target: string): string[] {
-  const normalizedTarget = target.replace(/\\/g, '/').replace(/^\.\//, '');
-  const direct = MdzArchiveCore.normalizePath(normalizedTarget);
-  const relative = MdzArchiveCore.normalizePath(path.posix.normalize(path.posix.join(baseDir || '', normalizedTarget)));
-  return [direct, relative].filter((value, index, self) => Boolean(value) && self.indexOf(value) === index);
+function mimeTypeForImagePath(archivePath: string): string | undefined {
+  const ext = archivePath.split('.').pop()?.toLowerCase() ?? '';
+  return MDZ_IMAGE_MIME_TYPES[ext];
 }
 
 function stripQueryAndHash(target: string): string {
@@ -502,6 +748,44 @@ function isExternalTarget(target: string): boolean {
     return true;
   }
   return false;
+}
+
+function toolError(
+  code: string,
+  message: string,
+  nextAction: string,
+  candidatePaths?: string[]
+): MdzToolError {
+  return new MdzToolError({
+    code,
+    message,
+    nextAction,
+    candidatePaths,
+  });
+}
+
+function toToolErrorResult(toolName: string, error: unknown): {
+  isError: true;
+  content: [{ type: 'text'; text: string }];
+} {
+  const payload: ToolErrorPayload =
+    error instanceof MdzToolError
+      ? error.payload
+      : {
+          code: 'INTERNAL_ERROR',
+          message: error instanceof Error ? error.message : String(error),
+          nextAction: `Retry ${toolName}. If the error persists, inspect the archive with mdz_list_entries and verify archivePath and entry paths.`,
+        };
+
+  return {
+    isError: true,
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({ error: payload }, null, 2),
+      },
+    ],
+  };
 }
 
 async function main(): Promise<void> {

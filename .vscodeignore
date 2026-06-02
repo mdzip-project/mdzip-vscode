@@ -3,7 +3,9 @@
 node_modules/**
 src/**
 .gitignore
+AGENTS.md
 .github/**
+tests/**
 tsconfig.json
 **/*.map
 *.vsix
@@ -12,7 +14,8 @@ tsconfig.json
 *.code-workspace
 *.mdz
 **/*.mdz
-/image.png
+.mdz-search/**
+image.png
 design/**
 
 # Only ship the bundled extension entrypoint from dist.

@@ -2,7 +2,7 @@
   "name": "mdzip-vscode",
   "displayName": "MDZip (.mdz) Editor",
   "description": "Read and write MDZip (.mdz) files including packaged images. Single document mode.",
-  "version": "0.1.64",
+  "version": "0.1.112",
   "icon": "media/icons/mdzip-marketplace-icon.png",
   "publisher": "mdzip-project",
   "license": "Apache-2.0",
@@ -10,11 +10,18 @@
     "type": "git",
     "url": "https://github.com/mdzip-project/mdzip-vscode"
   },
+  "bugs": {
+    "url": "https://github.com/mdzip-project/mdzip-vscode/issues"
+  },
+  "homepage": "https://github.com/mdzip-project/mdzip-vscode#readme",
   "engines": {
     "vscode": "^1.116.0"
   },
   "categories": [
-    "Other"
+    "Programming Languages",
+    "Visualization",
+    "AI",
+    "Chat"
   ],
   "keywords": [
     "mdzip",
@@ -31,7 +38,7 @@
     "mcpServerDefinitionProviders": [
       {
         "id": "mdzip.bundled-mcp",
-        "label": "MDZip Bundled MCP Server"
+        "label": "MDZip MCP Server"
       }
     ],
     "languages": [
@@ -72,12 +79,20 @@
       {
         "command": "mdzip.newFile",
         "title": "MDZip: New .mdz Document",
-        "category": "MDZip"
+        "category": "MDZip",
+        "icon": {
+          "light": "media/icons/mdzip-explorer-icon.svg",
+          "dark": "media/icons/mdzip-explorer-icon.svg"
+        }
       },
       {
         "command": "mdzip.convertMarkdownToMdz",
         "title": "MDZip: Convert .md To .mdz",
-        "category": "MDZip"
+        "category": "MDZip",
+        "icon": {
+          "light": "media/icons/mdzip-explorer-icon.svg",
+          "dark": "media/icons/mdzip-explorer-icon.svg"
+        }
       },
       {
         "command": "mdzip.copyMcpConfigSnippet",
@@ -107,6 +122,16 @@
       {
         "command": "mdzip.openExtensionHelp",
         "title": "MDZip: Open Extension Help",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.openDocumentation",
+        "title": "MDZip: Open Documentation",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.openWebsite",
+        "title": "MDZip: Visit mdzip.org",
         "category": "MDZip"
       },
       {
@@ -140,6 +165,12 @@
         },
         {
           "command": "mdzip.openExtensionHelp"
+        },
+        {
+          "command": "mdzip.openDocumentation"
+        },
+        {
+          "command": "mdzip.openWebsite"
         },
         {
           "command": "mdzip.enableWorkspaceAgentInstructions"
@@ -226,6 +257,22 @@
             ]
           },
           {
+            "id": "mdzip.gettingStarted.docs",
+            "title": "Open MDZip documentation",
+            "description": "Use [Open Documentation](command:mdzip.openDocumentation) to open MDZip docs in your browser.",
+            "completionEvents": [
+              "onCommand:mdzip.openDocumentation"
+            ]
+          },
+          {
+            "id": "mdzip.gettingStarted.website",
+            "title": "Visit mdzip.org",
+            "description": "Use [Visit mdzip.org](command:mdzip.openWebsite) to open the main MDZip website.",
+            "completionEvents": [
+              "onCommand:mdzip.openWebsite"
+            ]
+          },
+          {
             "id": "mdzip.gettingStarted.agentInstructions",
             "title": "Enable workspace agent instructions (optional)",
             "description": "Use [Enable Workspace Agent Instructions](command:mdzip.enableWorkspaceAgentInstructions) to write `.github/copilot-instructions.md` guidance that nudges agents to use `mdz_review_document` first for `.mdz` review tasks.",
@@ -242,10 +289,13 @@
     "bundle": "npm run bundle:extension && npm run bundle:mcp",
     "bundle:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
     "bundle:mcp": "esbuild src/mdzMcpServer.ts --bundle --outfile=dist/mdz-mcp-server.js --format=cjs --platform=node --minify",
+    "bundle:test-archive": "esbuild src/mdzArchiveUtils.ts src/shared/editorMetadata.ts --bundle --outdir=dist/test --format=cjs --platform=node",
+    "test:archive": "npm run compile && npm run bundle:test-archive && node --test tests/archive-utils.test.cjs",
+    "test:mcp-smoke": "npm run bundle:mcp && node tests/mcp-smoke.cjs",
     "compile": "tsc -p ./",
     "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
     "lint": "eslint src --ext ts",
-    "test": "npm run compile && node ./out/test/runTest.js"
+    "test": "npm run test:archive && npm run test:mcp-smoke"
   },
   "devDependencies": {
     "@types/node": "^20.19.39",
@@ -255,8 +305,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.4",
-    "jszip": "^3.10.1",
     "marked": "^15.0.12",
-    "mdzip-core-js": "^1.1.0"
+    "mdzip-core-js": "1.1.1"
   }
 }

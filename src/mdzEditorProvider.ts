@@ -23,6 +23,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
   private static _instance: MdzEditorProvider | undefined;
   private readonly _panelsByDocument = new Map<string, Set<vscode.WebviewPanel>>();
   private readonly _modeByWebview = new WeakMap<vscode.Webview, EditorMode>();
+  private readonly _isMarkdownEditorByWebview = new WeakMap<vscode.Webview, boolean>();
   private readonly _splitLayoutUris = new Set<string>();
 
   /** Hint that the next open for this URI should start in source edit mode. */
@@ -74,6 +75,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     MdzEditorProvider._instance = provider;
     const registrationOptions = {
       webviewOptions: {
+        enableFindWidget: true,
         retainContextWhenHidden: true,
       },
       supportsMultipleEditorsPerDocument: true,
@@ -138,6 +140,10 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     const initialMode: EditorMode =
       MdzEditorProvider.consumeInitialMode(document.uri) ?? this._suggestInitialMode(document.uri);
     this._modeByWebview.set(webviewPanel.webview, initialMode);
+    this._isMarkdownEditorByWebview.set(
+      webviewPanel.webview,
+      webviewPanel.viewType === MdzEditorProvider.MARKDOWN_VIEW_TYPE
+    );
 
     webviewPanel.webview.options = {
       enableScripts: true,
@@ -176,6 +182,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
             return;
           }
           await document.addImageAsset(message.archivePath, message.base64Data);
+          await this._broadcastDocumentContent(document);
           this._onDidChangeCustomDocument.fire({
             document,
             undo: () => {
@@ -206,6 +213,52 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
             return;
           }
           await this._sendDocumentContent(webviewPanel.webview, document);
+          this._onDidChangeCustomDocument.fire({
+            document,
+            undo: () => {
+              /* no-op for now */
+            },
+            redo: () => {
+              /* no-op for now */
+            },
+          });
+          break;
+
+        case 'removeOrphanedAsset':
+          if (typeof message.path !== 'string') {
+            return;
+          }
+          if (document.sourceFormat === 'markdown') {
+            return;
+          }
+          try {
+            const removeLabel = 'Remove Asset';
+            const selection = await vscode.window.showWarningMessage(
+              `Remove orphaned asset "${message.path}" from this archive?`,
+              { modal: true },
+              removeLabel
+            );
+            if (selection !== removeLabel) {
+              return;
+            }
+            const removed = await document.removeOrphanedAsset(message.path);
+            if (!removed) {
+              vscode.window.showInformationMessage(
+                'That asset is no longer orphaned or could not be removed.'
+              );
+              await this._broadcastDocumentContent(document);
+              return;
+            }
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`Unable to remove orphaned asset: ${detail}`);
+            await this._broadcastDocumentContent(document);
+            return;
+          }
+          await this._broadcastDocumentContent(document);
+          vscode.window.showInformationMessage(
+            'Removed orphaned asset. Save the archive to keep the change.'
+          );
           this._onDidChangeCustomDocument.fire({
             document,
             undo: () => {
@@ -340,10 +393,14 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     const suggestedTitle = suggestedTitleFromMarkdown(document.currentMarkdown, fileBaseName);
     const manifestTitle = await document.resolveManifestTitle();
     const displayTitle = displayTitleFromManifest(manifestTitle, fileBaseName);
+    const orphanedAssetPaths = await document.findCurrentOrphanedAssetPaths();
 
     await webview.postMessage({
       type: 'load',
       markdown: document.currentMarkdown,
+      sourceFormat: document.sourceFormat,
+      isMdzFile: document.uri.path.toLowerCase().endsWith('.mdz'),
+      isMarkdownEditor: this._isMarkdownEditorByWebview.get(webview) === true,
       entryPoint: content.entryPoint,
       currentPath: document.currentMarkdownPath,
       currentPathType: document.currentPathType,
@@ -354,19 +411,28 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       suggestedTitle,
       images,
       paths: content.paths,
+      orphanedAssetPaths,
       initialMode,
       layout: this._layoutModeForUri(document.uri, webview),
     } satisfies LoadMessage);
   }
 
   /** Build the HTML for the webview panel. */
-  private _buildWebviewHtml(webview: vscode.Webview, _document: MdzDocument): string {
+  private _buildWebviewHtml(webview: vscode.Webview, document: MdzDocument): string {
     const mediaDir = path.join(this.context.extensionPath, 'media');
+    const iconsDir = path.join(mediaDir, 'icons');
+    const isMdzFile = document.sourceFormat === 'mdz' && document.uri.path.toLowerCase().endsWith('.mdz');
 
     // Read bundled CSS and JS from the media directory
     const cssPath = path.join(mediaDir, 'editor.css');
     const jsPath = path.join(mediaDir, 'editor.js');
     const markedPath = path.join(mediaDir, 'marked.min.js');
+    const navIconUri = webview.asWebviewUri(
+      vscode.Uri.file(path.join(iconsDir, 'mdzip-nav-icon.svg'))
+    );
+    const markdownIconUri = webview.asWebviewUri(
+      vscode.Uri.file(path.join(iconsDir, 'markdown-mark.svg'))
+    );
 
     const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, 'utf8') : '';
     const editorJs = fs.existsSync(jsPath) ? fs.readFileSync(jsPath, 'utf8') : '';
@@ -388,16 +454,14 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
   <title>MDZip Editor</title>
   <style nonce="${nonce}">${css}</style>
 </head>
-<body>
+<body${isMdzFile ? '' : ' class="markdown-source"'} data-markdown-icon-uri="${markdownIconUri}">
   <div id="toolbar">
     <div id="toolbar-left">
-      <button id="btn-nav" class="icon-toggle" title="Toggle contents" aria-label="Toggle contents" type="button">
-        <svg class="toggle-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-          <path d="M3 2.5h3v1.5H3V2.5zm7 0h3v1.5h-3V2.5zM3 7.25h3v1.5H3v-1.5zm7 0h3v1.5h-3v-1.5zM6.9 3.2h1v1.8h1.2v1h-2.2V3.2zm1 3.8h1.2v1H7.9v1.9h-1V7zm0 3.9h1.2v1H7.9V13.5h-1V10.9z"/>
-        </svg>
+      <button id="btn-nav" class="icon-toggle" title="Toggle contents" aria-label="Toggle contents" type="button"${isMdzFile ? '' : ' hidden'}>
+        <img class="toggle-icon toggle-icon-image" src="${navIconUri}" alt="" aria-hidden="true" />
         <span class="visually-hidden">Toggle contents</span>
       </button>
-      <button id="btn-title" title="Edit document title"></button>
+      <button id="btn-title" title="Edit document title"${isMdzFile ? '' : ' hidden'}></button>
     </div>
     <div id="toolbar-buttons" role="group" aria-label="Editor layout">
       <button id="btn-preview" class="icon-toggle active" title="Preview" aria-label="Preview" type="button">
@@ -420,13 +484,23 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       </button>
     </div>
     <div id="toolbar-controls">
-      <div id="zoom-controls" title="Zoom controls">
-        <span id="zoom-level" aria-live="polite">100%</span>
-        <div id="zoom-stepper" role="group" aria-label="Zoom">
-          <button id="btn-zoom-out" title="Zoom out" aria-label="Zoom out" type="button">-</button>
-          <button id="btn-zoom-in" title="Zoom in" aria-label="Zoom in" type="button">+</button>
+      <div id="zoom-controls">
+        <button id="btn-zoom-toggle" class="icon-toggle" title="Zoom controls" aria-label="Zoom controls" aria-expanded="false" aria-controls="zoom-popover" type="button">
+          <svg class="toggle-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path d="M6.7 2a4.7 4.7 0 0 1 3.7 7.6l3.1 3.1-1 1-3.1-3.1A4.7 4.7 0 1 1 6.7 2zm0 1.3a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8z"/>
+            <path class="zoom-toggle-plus" d="M6.1 4.6h1.2v1.7H9v1.2H7.3v1.7H6.1V7.5H4.4V6.3h1.7V4.6z"/>
+            <path class="zoom-toggle-minus" d="M4.4 6.3H9v1.2H4.4V6.3z"/>
+          </svg>
+          <span class="visually-hidden">Zoom controls</span>
+        </button>
+        <div id="zoom-popover" class="hidden" role="group" aria-label="Zoom">
+          <span id="zoom-level" aria-live="polite">100%</span>
+          <div id="zoom-stepper" role="group" aria-label="Zoom steps">
+            <button id="btn-zoom-out" title="Zoom out" aria-label="Zoom out" type="button">-</button>
+            <button id="btn-zoom-in" title="Zoom in" aria-label="Zoom in" type="button">+</button>
+          </div>
+          <button id="btn-zoom-reset" title="Reset zoom" type="button">Reset</button>
         </div>
-        <button id="btn-zoom-reset" title="Reset zoom" type="button">Reset</button>
       </div>
     </div>
   </div>
@@ -449,10 +523,6 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
   <div id="workspace-shell">
     <aside id="nav-pane" aria-label="Package contents">
-      <div id="nav-header">
-        <div id="nav-title">Contents</div>
-        <div id="nav-subtitle"></div>
-      </div>
       <div id="nav-tree" role="tree"></div>
     </aside>
 
@@ -461,6 +531,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     <div id="pane-stack">
       <div id="edit-pane" class="pane">
         <div id="editor-wrap">
+          <div id="editor-line-numbers" aria-hidden="true"><pre id="editor-line-numbers-content"></pre></div>
           <pre id="editor-highlight" aria-hidden="true"><code></code></pre>
           <textarea id="editor" spellcheck="false"></textarea>
         </div>
@@ -508,6 +579,21 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     await Promise.all(tasks);
   }
 
+  private async _broadcastDocumentContent(document: MdzDocument): Promise<void> {
+    const key = document.uri.toString();
+    const set = this._panelsByDocument.get(key);
+    if (!set || set.size === 0) {
+      return;
+    }
+
+    const tasks: Promise<void>[] = [];
+    for (const panel of set) {
+      tasks.push(this._sendDocumentContent(panel.webview, document));
+    }
+
+    await Promise.all(tasks);
+  }
+
   private _trackPanel(uri: vscode.Uri, panel: vscode.WebviewPanel): boolean {
     const key = uri.toString();
     const set = this._panelsByDocument.get(key) ?? new Set<vscode.WebviewPanel>();
@@ -549,6 +635,11 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       } else if (mode === 'preview') {
         hasPreview = true;
       }
+    }
+
+    // First resolve for a newly tracked panel has no mode yet.
+    if (!hasEdit && !hasPreview) {
+      return 'preview';
     }
 
     if (!hasEdit) {
@@ -860,6 +951,7 @@ interface WebviewMessage {
     | 'edit'
     | 'pasteImage'
     | 'setTitle'
+    | 'removeOrphanedAsset'
     | 'openPath'
     | 'scrollSync'
     | 'modeChanged'
@@ -878,6 +970,9 @@ interface WebviewMessage {
 interface LoadMessage {
   type: 'load';
   markdown: string;
+  sourceFormat: 'mdz' | 'markdown';
+  isMdzFile: boolean;
+  isMarkdownEditor: boolean;
   entryPoint: string;
   currentPath: string;
   currentPathType: 'markdown' | 'text' | 'image' | 'binary';
@@ -888,6 +983,7 @@ interface LoadMessage {
   suggestedTitle: string;
   images: Record<string, string>;
   paths: Array<{ path: string; isMarkdown: boolean; isImage: boolean }>;
+  orphanedAssetPaths: string[];
   initialMode?: EditorMode;
   layout: LayoutMode;
 }

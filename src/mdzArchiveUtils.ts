@@ -1,11 +1,10 @@
 /**
- * Thin wrappers around mdzip-core-js and jszip for use in the VS Code extension.
+ * Thin wrappers around mdzip-core-js for use in the VS Code extension.
  *
  * All archive I/O goes through these helpers so the rest of the extension
- * does not need to import jszip or mdzip-core-js directly.
+ * does not need to import mdzip-core-js directly.
  */
 
-import JSZip from 'jszip';
 import { MdzArchiveCore, MdzPackagerCore, MdzManifest, MDZ_IMAGE_MIME_TYPES } from 'mdzip-core-js';
 
 export interface ArchiveEntry {
@@ -25,6 +24,8 @@ export interface OpenedArchive {
   markdownText: string;
   /** Embedded image map: archive-relative path → data URI */
   images: Map<string, string>;
+  /** Image asset paths not referenced by the entry-point markdown or manifest cover. */
+  orphanedAssetPaths: string[];
 }
 
 export interface NewArchiveAsset {
@@ -38,43 +39,33 @@ export async function openMdzArchive(bytes: Uint8Array): Promise<OpenedArchive> 
   const entryPoint = await archive.resolveEntryPoint();
   const manifest = await archive.readManifest();
 
-  const zip = await JSZip.loadAsync(bytes);
-  const paths: ArchiveEntry[] = [];
+  const paths = archive
+    .listEntries()
+    .filter((entry) => !entry.isDirectory)
+    .map((entry) => ({
+      path: entry.path,
+      isMarkdown: entry.isMarkdown,
+      isImage: entry.isImage,
+    }));
 
-  for (const [rawPath, entry] of Object.entries(zip.files)) {
-    if (entry.dir) continue;
-    const path = MdzArchiveCore.normalizePath(rawPath);
-    paths.push({
-      path,
-      isMarkdown: MdzArchiveCore.isMarkdownFile(path),
-      isImage: isImagePath(path),
-    });
-  }
-
-  // Read markdown text
-  const mdEntry = zip.files[entryPoint] ?? Object.values(zip.files).find(
-    (e) => MdzArchiveCore.normalizePath(e.name).toLowerCase() === entryPoint.toLowerCase()
-  );
-  if (!mdEntry) {
-    throw new Error(`Entry point "${entryPoint}" not found in archive.`);
-  }
-  const markdownText = await mdEntry.async('text');
+  const markdownText = await archive.readText(entryPoint);
+  const orphanedAssets = await archive.findOrphanedAssets({ entryPoint });
 
   // Read all images as base64 data URIs
   const images = new Map<string, string>();
   for (const entry of paths) {
     if (!entry.isImage) continue;
-    const zipEntry = zip.files[entry.path] ?? Object.values(zip.files).find(
-      (e) => MdzArchiveCore.normalizePath(e.name).toLowerCase() === entry.path.toLowerCase()
-    );
-    if (!zipEntry) continue;
-    const base64 = await zipEntry.async('base64');
-    const ext = entry.path.split('.').pop()?.toLowerCase() ?? '';
-    const mime = MDZ_IMAGE_MIME_TYPES[ext] ?? 'image/png';
-    images.set(entry.path, `data:${mime};base64,${base64}`);
+    images.set(entry.path, await archive.readDataUri(entry.path, 'image/png'));
   }
 
-  return { paths, entryPoint, manifest, markdownText, images };
+  return {
+    paths,
+    entryPoint,
+    manifest,
+    markdownText,
+    images,
+    orphanedAssetPaths: orphanedAssets.orphanedAssetPaths,
+  };
 }
 
 /**
@@ -105,23 +96,43 @@ export async function updateBinaryInArchive(
 }
 
 /**
+ * Remove files from an existing .mdz archive and return bytes.
+ */
+export async function removeFilesFromArchive(
+  existingBytes: Uint8Array,
+  archivePaths: string[]
+): Promise<Uint8Array> {
+  const result = await MdzArchiveCore.removeFiles(existingBytes, archivePaths);
+  return new Uint8Array(await result.blob.arrayBuffer());
+}
+
+/**
+ * Find image assets that are not referenced by the entry-point markdown or manifest cover.
+ */
+export async function findOrphanedAssetPathsInArchive(
+  existingBytes: Uint8Array,
+  entryPoint?: string
+): Promise<string[]> {
+  const result = await MdzArchiveCore.findOrphanedAssets(
+    existingBytes,
+    entryPoint ? { entryPoint } : undefined
+  );
+  return result.orphanedAssetPaths;
+}
+
+/**
  * Read raw file bytes from an archive by archive-relative path.
  */
 export async function readBinaryFileFromArchive(
   existingBytes: Uint8Array,
   archivePath: string
 ): Promise<Uint8Array> {
-  const normalizedPath = MdzArchiveCore.normalizePath(archivePath);
-  const zip = await JSZip.loadAsync(existingBytes);
-  const entry = zip.files[normalizedPath] ?? Object.values(zip.files).find(
-    (candidate) => MdzArchiveCore.normalizePath(candidate.name).toLowerCase() === normalizedPath.toLowerCase()
-  );
-
-  if (!entry || entry.dir) {
+  const archive = await MdzArchiveCore.open(existingBytes);
+  try {
+    return await archive.readBytes(archivePath);
+  } catch {
     throw new Error(`Archive file "${archivePath}" not found.`);
   }
-
-  return entry.async('uint8array');
 }
 
 /**
@@ -131,8 +142,12 @@ export async function readTextFileFromArchive(
   existingBytes: Uint8Array,
   archivePath: string
 ): Promise<string> {
-  const bytes = await readBinaryFileFromArchive(existingBytes, archivePath);
-  return new TextDecoder('utf-8').decode(bytes);
+  const archive = await MdzArchiveCore.open(existingBytes);
+  try {
+    return await archive.readText(archivePath);
+  } catch {
+    throw new Error(`Archive file "${archivePath}" not found.`);
+  }
 }
 
 /**

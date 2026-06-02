@@ -5,7 +5,7 @@
  * the acquireVsCodeApi() message bus.
  *
  * Expected inbound messages (from extension):
- *   { type: 'load', markdown, entryPoint, currentPath, manifest, images, paths }
+ *   { type: 'load', markdown, sourceFormat, isMdzFile, isMarkdownEditor, entryPoint, currentPath, manifest, images, paths }
  *
  * Outbound messages (to extension):
  *   { type: 'ready' }
@@ -46,12 +46,17 @@
   const splitResizer = /** @type {HTMLElement} */ (document.getElementById('split-resizer'));
   const previewContent = /** @type {HTMLElement} */ (document.getElementById('preview-content'));
   const editor      = /** @type {HTMLTextAreaElement} */ (document.getElementById('editor'));
+  const editorLineNumbers = /** @type {HTMLElement} */ (document.getElementById('editor-line-numbers'));
+  const editorLineNumbersContent = /** @type {HTMLElement} */ (document.getElementById('editor-line-numbers-content'));
   const editorHighlight = /** @type {HTMLElement} */ (document.getElementById('editor-highlight'));
   const btnTitle    = /** @type {HTMLButtonElement} */ (document.getElementById('btn-title'));
   const btnNav      = /** @type {HTMLButtonElement} */ (document.getElementById('btn-nav'));
   const btnPreview  = /** @type {HTMLButtonElement} */ (document.getElementById('btn-preview'));
   const btnEdit     = /** @type {HTMLButtonElement} */ (document.getElementById('btn-edit'));
   const btnSideBySide = /** @type {HTMLButtonElement} */ (document.getElementById('btn-side-by-side'));
+  const zoomControls = /** @type {HTMLElement} */ (document.getElementById('zoom-controls'));
+  const zoomPopover = /** @type {HTMLElement} */ (document.getElementById('zoom-popover'));
+  const btnZoomToggle = /** @type {HTMLButtonElement} */ (document.getElementById('btn-zoom-toggle'));
   const zoomLevelLabel = /** @type {HTMLElement} */ (document.getElementById('zoom-level'));
   const btnZoomOut  = /** @type {HTMLButtonElement} */ (document.getElementById('btn-zoom-out'));
   const btnZoomIn   = /** @type {HTMLButtonElement} */ (document.getElementById('btn-zoom-in'));
@@ -62,13 +67,13 @@
   const btnTitleCancel = /** @type {HTMLButtonElement} */ (document.getElementById('btn-title-cancel'));
   const btnTitleReset = /** @type {HTMLButtonElement} */ (document.getElementById('btn-title-reset'));
   const btnTitleSave = /** @type {HTMLButtonElement} */ (document.getElementById('btn-title-save'));
-  const navSubtitle = /** @type {HTMLElement} */ (document.getElementById('nav-subtitle'));
   const navTree = /** @type {HTMLElement} */ (document.getElementById('nav-tree'));
 
   // ── State ─────────────────────────────────────────────────────────────────
   /** @type {Record<string, string>} archive-path → data-URI */
   let imageMap = {};
   let archivePaths = [];
+  const orphanedAssetPaths = new Set();
   /** @type {string} */
   let entryPoint = '';
   /** @type {string} */
@@ -80,8 +85,13 @@
   let fallbackTitle = 'document';
   let activeMode = 'preview';
   let layoutMode = 'preview';
+  let sourceFormat = 'mdz';
+  let isMdzFile = false;
+  let isMarkdownEditor = false;
+  let zoomControlsOpen = false;
   let suppressScrollEvents = false;
   let scrollEmitTimer = null;
+  const markdownIconUri = document.body ? document.body.dataset.markdownIconUri || '' : '';
 
   const ZOOM_MIN = 0.5;
   const ZOOM_MAX = 2.5;
@@ -134,12 +144,27 @@
     if (zoomLevelLabel) {
       zoomLevelLabel.textContent = `${Math.round(rounded * 100)}%`;
     }
+    if (btnZoomToggle) {
+      btnZoomToggle.title = `Zoom controls (${Math.round(rounded * 100)}%)`;
+      btnZoomToggle.classList.toggle('zoomed-out', rounded < 1);
+    }
     if (persist) {
       updatePersistedState({ zoomLevel: rounded });
     }
   }
 
   applyZoom(zoomLevel, false);
+
+  function setZoomControlsOpen(nextOpen) {
+    zoomControlsOpen = nextOpen;
+    if (zoomPopover) {
+      zoomPopover.classList.toggle('hidden', !zoomControlsOpen);
+    }
+    if (btnZoomToggle) {
+      btnZoomToggle.classList.toggle('active', zoomControlsOpen);
+      btnZoomToggle.setAttribute('aria-expanded', zoomControlsOpen ? 'true' : 'false');
+    }
+  }
 
   function applyNavPaneWidth(nextWidth, persist = true) {
     navPaneWidth = clampNavWidth(nextWidth);
@@ -229,6 +254,32 @@
     }
   }
 
+  function applySourceFormatUi() {
+    const canShowPackageControls = sourceFormat === 'mdz' && isMdzFile && !isMarkdownEditor;
+
+    if (btnNav) {
+      btnNav.hidden = !canShowPackageControls;
+      btnNav.disabled = !canShowPackageControls;
+      btnNav.setAttribute('aria-disabled', btnNav.disabled ? 'true' : 'false');
+    }
+
+    if (btnTitle) {
+      btnTitle.hidden = !canShowPackageControls;
+      btnTitle.disabled = !canShowPackageControls;
+      btnTitle.setAttribute('aria-disabled', btnTitle.disabled ? 'true' : 'false');
+      btnTitle.title = canShowPackageControls
+        ? 'Edit document title'
+        : 'Package title editing is only available for .mdz files.';
+    }
+
+    if (!canShowPackageControls) {
+      closeTitleDialog();
+      setNavVisible(false, false);
+    } else {
+      setNavVisible(navVisible, false);
+    }
+  }
+
   function createArchiveTree(paths) {
     const root = { directories: new Map(), files: [] };
 
@@ -251,6 +302,7 @@
             path: currentPath,
             isMarkdown: Boolean(entry.isMarkdown),
             isImage: Boolean(entry.isImage),
+            isOrphanedAsset: orphanedAssetPaths.has(currentPath.toLowerCase()),
           });
         } else {
           if (!node.directories.has(segment)) {
@@ -269,22 +321,6 @@
     return root;
   }
 
-  function fileBadgeText(fileNode) {
-    if (fileNode.path === currentPath) {
-      return 'Open';
-    }
-    if (fileNode.path === entryPoint) {
-      return 'Entry';
-    }
-    if (fileNode.isMarkdown) {
-      return 'MD';
-    }
-    if (fileNode.isImage) {
-      return 'IMG';
-    }
-    return '';
-  }
-
   function isManifestPath(archivePath) {
     const path = String(archivePath || '').toLowerCase();
     const filename = path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
@@ -295,6 +331,28 @@
     return (currentPathType === 'markdown' || currentPathType === 'text') && !isManifestPath(currentPath);
   }
 
+  function extensionLabelForPath(archivePath) {
+    const name = String(archivePath || '').split('/').pop() || '';
+    const match = name.match(/\.([^.]+)$/);
+    if (!match) {
+      return 'FILE';
+    }
+    return match[1].slice(0, 4).toUpperCase();
+  }
+
+  function iconMetaForFile(fileNode) {
+    if (isManifestPath(fileNode.path)) {
+      return { className: 'manifest', label: '{}' };
+    }
+    if (fileNode.isMarkdown) {
+      return { className: 'markdown markdown-mark', label: '', imageSrc: markdownIconUri };
+    }
+    if (fileNode.isImage) {
+      return { className: 'image', label: extensionLabelForPath(fileNode.path) };
+    }
+    return { className: 'file', label: extensionLabelForPath(fileNode.path) };
+  }
+
   function renderFileNode(fileNode) {
     const item = document.createElement('button');
     item.type = 'button';
@@ -303,32 +361,121 @@
       item.classList.add('current-entry');
       item.setAttribute('aria-current', 'true');
     }
-    item.title = fileNode.path;
+    if (fileNode.isOrphanedAsset) {
+      item.classList.add('orphaned-asset');
+    }
+    item.title = fileNode.isOrphanedAsset
+      ? `${fileNode.path} - not referenced by the entry markdown`
+      : fileNode.path;
 
-    const spacer = document.createElement('span');
-    spacer.className = 'nav-file-spacer';
-    spacer.setAttribute('aria-hidden', 'true');
-    spacer.textContent = '';
+    const iconMeta = iconMetaForFile(fileNode);
+    const icon = document.createElement('span');
+    icon.className = `nav-file-icon ${iconMeta.className}`;
+    icon.setAttribute('aria-hidden', 'true');
+    if (iconMeta.imageSrc) {
+      const image = document.createElement('img');
+      image.src = iconMeta.imageSrc;
+      image.alt = '';
+      image.draggable = false;
+      icon.appendChild(image);
+    } else {
+      icon.textContent = iconMeta.label;
+    }
 
     const label = document.createElement('span');
     label.className = 'nav-label';
     label.textContent = fileNode.name;
 
-    item.append(spacer, label);
+    item.append(icon);
 
-    const badgeText = fileBadgeText(fileNode);
-    if (badgeText) {
-      const badge = document.createElement('span');
-      badge.className = 'nav-kind';
-      badge.textContent = badgeText;
-      item.appendChild(badge);
+    if (fileNode.isOrphanedAsset) {
+      item.appendChild(createBrokenLinkIcon());
     }
+
+    item.append(label);
 
     item.addEventListener('click', () => {
       host.postMessage({ type: 'openPath', path: fileNode.path });
     });
 
+    if (fileNode.isOrphanedAsset) {
+      item.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        showOrphanContextMenu(fileNode.path, event.clientX, event.clientY);
+      });
+    }
+
     return item;
+  }
+
+  function createBrokenLinkIcon() {
+    const icon = document.createElement('span');
+    icon.className = 'nav-orphan-icon';
+    icon.title = 'Orphaned asset';
+    icon.setAttribute('aria-label', 'Orphaned asset');
+    icon.innerHTML = [
+      '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">',
+      '<path d="M5.2 4.1 3.9 5.4a2.5 2.5 0 0 0 3.5 3.5l.8-.8-.9-.9-.8.8a1.2 1.2 0 0 1-1.7-1.7l1.3-1.3a1.2 1.2 0 0 1 1.7 0l.4.4.9-.9-.4-.4a2.5 2.5 0 0 0-3.5 0z"/>',
+      '<path d="m8.2 10.6.4.4a2.5 2.5 0 0 0 3.5 0l1.3-1.3a2.5 2.5 0 0 0-3.5-3.5l-.8.8.9.9.8-.8a1.2 1.2 0 1 1 1.7 1.7l-1.3 1.3a1.2 1.2 0 0 1-1.7 0l-.4-.4-.9.9z"/>',
+      '<path d="m5 12.8 7.8-7.8-.8-.8-7.8 7.8.8.8z"/>',
+      '</svg>',
+    ].join('');
+    return icon;
+  }
+
+  let orphanContextMenu = null;
+
+  function ensureOrphanContextMenu() {
+    if (orphanContextMenu) {
+      return orphanContextMenu;
+    }
+
+    const menu = document.createElement('div');
+    menu.id = 'orphan-context-menu';
+    menu.className = 'hidden';
+    menu.setAttribute('role', 'menu');
+
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.setAttribute('role', 'menuitem');
+    removeButton.textContent = 'Remove Orphaned Asset';
+    removeButton.addEventListener('click', () => {
+      const path = menu.dataset.path;
+      hideOrphanContextMenu();
+      if (path) {
+        host.postMessage({ type: 'removeOrphanedAsset', path });
+      }
+    });
+
+    menu.appendChild(removeButton);
+    document.body.appendChild(menu);
+    orphanContextMenu = menu;
+    return menu;
+  }
+
+  function showOrphanContextMenu(path, clientX, clientY) {
+    const menu = ensureOrphanContextMenu();
+    menu.dataset.path = path;
+    menu.classList.remove('hidden');
+
+    const maxLeft = Math.max(0, window.innerWidth - menu.offsetWidth - 4);
+    const maxTop = Math.max(0, window.innerHeight - menu.offsetHeight - 4);
+    menu.style.left = `${Math.min(clientX, maxLeft)}px`;
+    menu.style.top = `${Math.min(clientY, maxTop)}px`;
+
+    const firstButton = menu.querySelector('button');
+    if (firstButton) {
+      firstButton.focus();
+    }
+  }
+
+  function hideOrphanContextMenu() {
+    if (!orphanContextMenu) {
+      return;
+    }
+    orphanContextMenu.classList.add('hidden');
+    orphanContextMenu.removeAttribute('data-path');
   }
 
   function renderDirectoryNode(directoryNode) {
@@ -472,7 +619,7 @@
   }
 
   function openTitleDialog() {
-    if (!titleDialogBackdrop || !titleInput) {
+    if (!titleDialogBackdrop || !titleInput || (btnTitle && btnTitle.disabled)) {
       return;
     }
     titleInput.value = currentDisplayTitle;
@@ -574,6 +721,26 @@
       }
     });
   }
+  if (btnZoomToggle) {
+    btnZoomToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setZoomControlsOpen(!zoomControlsOpen);
+    });
+  }
+  if (zoomPopover) {
+    zoomPopover.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+  }
+  document.addEventListener('click', (e) => {
+    hideOrphanContextMenu();
+    if (!zoomControlsOpen || !zoomControls || !e.target) {
+      return;
+    }
+    if (!zoomControls.contains(/** @type {Node} */ (e.target))) {
+      setZoomControlsOpen(false);
+    }
+  });
   if (btnZoomOut) {
     btnZoomOut.addEventListener('click', () => applyZoom(zoomLevel - ZOOM_STEP));
   }
@@ -653,9 +820,34 @@
     }
     editorHighlight.scrollTop = editor.scrollTop;
     editorHighlight.scrollLeft = editor.scrollLeft;
+
+    if (editorLineNumbersContent) {
+      editorLineNumbersContent.style.transform = `translateY(${-editor.scrollTop}px)`;
+    }
+  }
+
+  function renderEditorLineNumbers() {
+    if (!editorLineNumbersContent || !editorLineNumbers) {
+      return;
+    }
+
+    const source = editor.value || '';
+    const lineCount = Math.max(1, source.split('\n').length);
+    const values = [];
+    for (let line = 1; line <= lineCount; line++) {
+      values.push(String(line));
+    }
+    editorLineNumbersContent.textContent = values.join('\n');
+
+    const digits = String(lineCount).length;
+    const minWidth = 40;
+    const charWidth = 9;
+    const gutterWidth = Math.max(minWidth, digits * charWidth + 16);
+    editorLineNumbers.style.width = `${gutterWidth}px`;
   }
 
   function refreshEditorDecorations() {
+    renderEditorLineNumbers();
     renderEditorHighlight();
     syncEditorHighlightScroll();
   }
@@ -673,7 +865,7 @@
       const fenceMatch = line.match(/^(\s*)(`{3,}|~{3,})(.*)$/);
       if (fenceMatch) {
         inFence = !inFence;
-        return `${escapeHtml(fenceMatch[1])}<span class="md-syntax-fence">${escapeHtml(fenceMatch[2] + fenceMatch[3])}</span>`;
+        return `${escapeHtml(fenceMatch[1])}<span class="md-syntax-marker">${escapeHtml(fenceMatch[2])}</span><span class="md-syntax-fence">${escapeHtml(fenceMatch[3])}</span>`;
       }
 
       if (inFence) {
@@ -682,7 +874,7 @@
 
       const headingMatch = line.match(/^(\s{0,3})(#{1,6})(\s+.*)?$/);
       if (headingMatch) {
-        return `${escapeHtml(headingMatch[1])}<span class="md-syntax-heading">${escapeHtml(headingMatch[2])}</span>${highlightMarkdownInline(headingMatch[3] || '')}`;
+        return `${escapeHtml(headingMatch[1])}<span class="md-syntax-marker">${escapeHtml(headingMatch[2])}</span><span class="md-syntax-heading">${highlightMarkdownInline(headingMatch[3] || '')}</span>`;
       }
 
       const quoteMatch = line.match(/^(\s{0,3}>+)(\s?.*)$/);
@@ -697,7 +889,7 @@
 
       const listMatch = line.match(/^(\s*)([-+*]|\d+[.)])(\s+)(.*)$/);
       if (listMatch) {
-        return `${escapeHtml(listMatch[1])}<span class="md-syntax-list">${escapeHtml(listMatch[2])}</span>${escapeHtml(listMatch[3])}${highlightMarkdownInline(listMatch[4])}`;
+        return `${escapeHtml(listMatch[1])}<span class="md-syntax-marker">${escapeHtml(listMatch[2])}</span>${escapeHtml(listMatch[3])}${highlightMarkdownInline(listMatch[4])}`;
       }
 
       return highlightMarkdownInline(line);
@@ -1279,12 +1471,21 @@
 
   // ── Editor change → notify extension ─────────────────────────────────────
   let editTimer = null;
+  let previewTimer = null;
+
+  function schedulePreviewRender() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => {
+      renderPreview();
+    }, 100);
+  }
 
   editor.addEventListener('input', () => {
     if (!canEditCurrentPath()) {
       return;
     }
     refreshEditorDecorations();
+    schedulePreviewRender();
     // Debounce to avoid sending a message on every keystroke
     clearTimeout(editTimer);
     editTimer = setTimeout(() => {
@@ -1304,6 +1505,7 @@
       editor.value = editor.value.slice(0, start) + '  ' + editor.value.slice(end);
       editor.selectionStart = editor.selectionEnd = start + 2;
       refreshEditorDecorations();
+      renderPreview();
       host.postMessage({ type: 'edit', markdown: editor.value });
     }
   });
@@ -1313,18 +1515,25 @@
     if (!message || typeof message !== 'object') return;
 
     if (message.type === 'load') {
+      sourceFormat = message.sourceFormat === 'markdown' ? 'markdown' : 'mdz';
+      isMdzFile = message.isMdzFile === true;
+      isMarkdownEditor = message.isMarkdownEditor === true;
       imageMap    = message.images || {};
       archivePaths = Array.isArray(message.paths) ? message.paths : [];
+      orphanedAssetPaths.clear();
+      if (Array.isArray(message.orphanedAssetPaths)) {
+        for (const assetPath of message.orphanedAssetPaths) {
+          orphanedAssetPaths.add(String(assetPath || '').toLowerCase());
+        }
+      }
       entryPoint  = message.entryPoint || '';
       currentPath = message.currentPath || entryPoint;
       currentPathType = message.currentPathType || 'markdown';
       editor.value = message.markdown || '';
       refreshEditorDecorations();
       fallbackTitle = String(message.suggestedTitle || message.headingFallback || message.fileBaseName || 'document');
-      if (navSubtitle) {
-        navSubtitle.textContent = currentPath || fallbackTitle;
-      }
       renderArchiveTree();
+      applySourceFormatUi();
 
       // Update toolbar label
       setDisplayTitle(message.displayTitle || entryPoint);
@@ -1365,9 +1574,18 @@
   host.postMessage({ type: 'ready' });
 
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && titleDialogBackdrop && !titleDialogBackdrop.classList.contains('hidden')) {
+    if (e.key === 'Escape' && orphanContextMenu && !orphanContextMenu.classList.contains('hidden')) {
+      e.preventDefault();
+      hideOrphanContextMenu();
+    } else if (e.key === 'Escape' && titleDialogBackdrop && !titleDialogBackdrop.classList.contains('hidden')) {
       e.preventDefault();
       closeTitleDialog();
+    } else if (e.key === 'Escape' && zoomControlsOpen) {
+      e.preventDefault();
+      setZoomControlsOpen(false);
+      if (btnZoomToggle) {
+        btnZoomToggle.focus();
+      }
     }
   });
 

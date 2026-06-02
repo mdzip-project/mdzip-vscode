@@ -4,10 +4,6 @@
 			"path": "."
 		},
 		{
-			"name": "test 2.zip",
-			"uri": "zip:f:\\Code\\1 Projects\\mdzip-project\\mdzip-vscode\\test 2.zip"
-		},
-		{
 			"name": "RUSH.zip",
 			"uri": "zip:f:\\Code\\1 Projects\\mdzip-project\\mdzip-vscode\\RUSH.zip"
 		}
