@@ -4,6 +4,7 @@ node_modules/**
 src/**
 .gitignore
 AGENTS.md
+*AGENTS.md
 .github/**
 tests/**
 tsconfig.json

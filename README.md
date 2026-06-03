@@ -110,18 +110,17 @@ When VS Code prompts you to trust or start the bundled MDZip MCP server, approve
 | `src/extension.ts` | Extension entry point; registers provider and top-level commands |
 | `src/mdzEditorProvider.ts` | `CustomEditorProvider` implementation; manages webview lifecycle and message passing |
 | `src/mdzDocument.ts` | In-memory document model; reads and writes the archive on disk |
-| `src/mdzArchiveUtils.ts` | Thin wrappers around [`mdzip-core-js`](https://github.com/mdzip-project/mdzip-core-js) |
-| `src/shared/editorMetadata.ts` | Host-agnostic metadata/title helpers shared across extension layers |
+| `@mdzip/editor` | Shared archive, metadata, rendering, and workspace helpers linked from `../mdzip-editor/packages/editor` |
 | `media/editor.css` | Webview stylesheet |
 | `media/editor.js` | Webview script for Markdown rendering, image rewriting, host bridge, and message bus |
 
-### Reuse notes
+### Shared editor package
 
-The codebase is split so reusable logic can move into a future `mdzip-editor` package:
+Reusable archive and editor-domain logic lives in the linked `@mdzip/editor` package. The VS Code extension keeps the host-specific pieces here:
 
-- `src/shared/*` is intended to stay host-agnostic and reusable.
-- `src/mdzArchiveUtils.ts` wraps core archive operations and is portable outside VS Code.
-- `media/editor.js` uses a small host bridge boundary (`createVscodeHost`) so the UI logic can be adapted to non-VS Code hosts with a different bridge implementation.
+- `src/mdzDocument.ts` adapts shared archive helpers to VS Code's custom document lifecycle.
+- `src/mdzEditorProvider.ts` manages webview creation, VS Code commands, and message passing.
+- `media/editor.js` uses a small host bridge boundary (`createVscodeHost`) for the VS Code webview runtime.
 
 ## Building
 

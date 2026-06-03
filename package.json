@@ -2,7 +2,7 @@
   "name": "mdzip-vscode",
   "displayName": "MDZip (.mdz) Editor",
   "description": "Read and write MDZip (.mdz) files including packaged images. Single document mode.",
-  "version": "0.1.112",
+  "version": "0.1.140",
   "icon": "media/icons/mdzip-marketplace-icon.png",
   "publisher": "mdzip-project",
   "license": "Apache-2.0",
@@ -32,6 +32,9 @@
   ],
   "activationEvents": [
     "onStartupFinished"
+  ],
+  "extensionDependencies": [
+    "vscode.git"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -95,6 +98,16 @@
         }
       },
       {
+        "command": "mdzip.compareMarkdown",
+        "title": "MDZip: Compare Markdown",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.compareWithGitBase",
+        "title": "MDZip: Compare with Git Base",
+        "category": "MDZip"
+      },
+      {
         "command": "mdzip.copyMcpConfigSnippet",
         "title": "MDZip: Copy MCP Server Config Snippet",
         "category": "MDZip"
@@ -149,6 +162,12 @@
           "command": "mdzip.convertMarkdownToMdz"
         },
         {
+          "command": "mdzip.compareMarkdown"
+        },
+        {
+          "command": "mdzip.compareWithGitBase"
+        },
+        {
           "command": "mdzip.copyMcpConfigSnippet"
         },
         {
@@ -186,6 +205,16 @@
           "command": "mdzip.convertMarkdownToMdz",
           "when": "resourceExtname == .md",
           "group": "navigation@11"
+        },
+        {
+          "command": "mdzip.compareMarkdown",
+          "when": "resourceExtname == .mdz",
+          "group": "navigation@12"
+        },
+        {
+          "command": "mdzip.compareWithGitBase",
+          "when": "resourceExtname == .mdz",
+          "group": "navigation@13"
         }
       ],
       "editor/title": [
@@ -199,6 +228,14 @@
         {
           "command": "mdzip.convertMarkdownToMdz",
           "when": "resourceExtname == .md"
+        },
+        {
+          "command": "mdzip.compareMarkdown",
+          "when": "resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.compareWithGitBase",
+          "when": "resourceExtname == .mdz"
         }
       ]
     },
@@ -286,16 +323,16 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run bundle",
-    "bundle": "npm run bundle:extension && npm run bundle:mcp",
+    "bundle": "npm run bundle:extension && npm run bundle:webview && npm run bundle:mcp",
     "bundle:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "bundle:webview": "esbuild src/webviewEditor.ts --bundle --outfile=media/editor.bundle.js --format=iife --platform=browser --minify",
     "bundle:mcp": "esbuild src/mdzMcpServer.ts --bundle --outfile=dist/mdz-mcp-server.js --format=cjs --platform=node --minify",
-    "bundle:test-archive": "esbuild src/mdzArchiveUtils.ts src/shared/editorMetadata.ts --bundle --outdir=dist/test --format=cjs --platform=node",
-    "test:archive": "npm run compile && npm run bundle:test-archive && node --test tests/archive-utils.test.cjs",
+    "test:editor": "npm --prefix ../mdzip-editor/packages/editor test",
     "test:mcp-smoke": "npm run bundle:mcp && node tests/mcp-smoke.cjs",
     "compile": "tsc -p ./",
     "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
     "lint": "eslint src --ext ts",
-    "test": "npm run test:archive && npm run test:mcp-smoke"
+    "test": "npm run test:editor && npm run test:mcp-smoke"
   },
   "devDependencies": {
     "@types/node": "^20.19.39",
@@ -304,6 +341,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@mdzip/editor": "file:../mdzip-editor/packages/editor",
     "@modelcontextprotocol/sdk": "^1.17.4",
     "marked": "^15.0.12",
     "mdzip-core-js": "1.1.1"

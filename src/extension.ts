@@ -1,13 +1,54 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import type { GitExtension } from './vendor/git';
 import { MdzEditorProvider } from './mdzEditorProvider';
-import { fileBaseNameFromPath, suggestedTitleFromMarkdown } from './shared/editorMetadata';
+import {
+  buildNewArchiveWithTitle,
+  buildNewArchiveBytesWithTitle,
+  fileBaseNameFromPath,
+  readCanonicalMarkdown,
+  suggestedTitleFromMarkdown,
+} from '@mdzip/editor';
 
 const BUNDLED_MCP_SERVER_LABEL = 'MDZip MCP Server';
 const BUNDLED_MCP_SERVER_KEY = 'MDZip';
 const LEGACY_BUNDLED_MCP_SERVER_KEY = 'mdzip';
 
+async function pickMdzFile(prompt: string): Promise<vscode.Uri | undefined> {
+  const result = await vscode.window.showOpenDialog({
+    canSelectFiles: true,
+    canSelectFolders: false,
+    canSelectMany: false,
+    filters: { 'MDZip Document': ['mdz'] },
+    title: prompt,
+  });
+  return result?.[0];
+}
+
+async function getGitBaseBytes(fileUri: vscode.Uri): Promise<Buffer> {
+  const gitExt = vscode.extensions.getExtension<GitExtension>('vscode.git');
+  if (!gitExt) throw new Error('Git extension not available');
+  if (!gitExt.isActive) await gitExt.activate();
+  const api = gitExt.exports.getAPI(1);
+
+  const repo = api.getRepository(fileUri);
+  if (!repo) throw new Error('File is not inside a git repository');
+
+  const relPath = fileUri.fsPath
+    .substring(repo.rootUri.fsPath.length + 1)
+    .replace(/\\/g, '/');
+
+  try {
+    return await repo.buffer('HEAD', relPath);
+  } catch {
+    throw new Error(`File has no git history: ${path.basename(fileUri.fsPath)}`);
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
+  const version = context.extension.packageJSON.version;
+  console.log(`[MDZip] Activating extension version ${version}`);
+
   context.subscriptions.push(MdzEditorProvider.register(context));
 
   const bundledServerPath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'mdz-mcp-server.js').fsPath;
@@ -223,7 +264,6 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       // Write an empty .mdz archive with a starter index.md
-      const { buildNewArchiveWithTitle } = await import('./mdzArchiveUtils');
       const blob = await buildNewArchiveWithTitle(
         '# New Document\n\nStart writing here.\n',
         fileBaseNameFromPath(targetUri.path)
@@ -270,12 +310,237 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       }
 
-      const { buildNewArchiveBytesWithTitle } = await import('./mdzArchiveUtils');
       const bytes = await buildNewArchiveBytesWithTitle(markdown, derivedTitle, buildAssets);
       await vscode.workspace.fs.writeFile(targetUri, bytes);
 
       MdzEditorProvider.markNextOpenInEdit(targetUri);
       await vscode.commands.executeCommand('vscode.openWith', targetUri, 'mdzip.mdzEditor');
+    })
+  );
+
+
+  // Register FileSystemProvider for virtual markdown URIs
+  class MdzMarkdownFsProvider implements vscode.FileSystemProvider {
+      static cache = new Map<string, Uint8Array>(); // key → raw .mdz bytes
+
+      onDidChangeFile = new vscode.EventEmitter<vscode.FileChangeEvent[]>().event;
+
+      async stat(): Promise<vscode.FileStat> {
+        return { type: vscode.FileType.File, size: 0, mtime: 0, ctime: 0 };
+      }
+
+      async readDirectory(): Promise<[string, vscode.FileType][]> {
+        return [];
+      }
+
+      async createDirectory(): Promise<void> {
+        throw vscode.FileSystemError.NoPermissions('Read-only file system');
+      }
+
+      async readFile(uri: vscode.Uri): Promise<Uint8Array> {
+        // URI format: mdzip-markdown:///<key>/<fsPath>
+        // path will be /<key>/<fsPath> due to triple slash in URI
+        const match = uri.path.match(/^\/([^/]+)\/(.+)$/);
+        if (!match) throw new Error('Invalid URI format');
+        const [, key, fsPath] = match;
+
+        // Use cached bytes if present (git base), else read from disk (working copy)
+        const cached = MdzMarkdownFsProvider.cache.get(key);
+        const mdzBytes = cached ?? new Uint8Array(await vscode.workspace.fs.readFile(vscode.Uri.file(fsPath)));
+
+        const result = await readCanonicalMarkdown(mdzBytes);
+        return new TextEncoder().encode(result.markdown);
+      }
+
+      async writeFile(): Promise<void> {
+        throw vscode.FileSystemError.NoPermissions('Read-only file system');
+      }
+
+      async delete(): Promise<void> {
+        throw vscode.FileSystemError.NoPermissions('Read-only file system');
+      }
+
+      async rename(): Promise<void> {
+        throw vscode.FileSystemError.NoPermissions('Read-only file system');
+      }
+
+      watch(): vscode.Disposable {
+        return new vscode.Disposable(() => {});
+      }
+  }
+
+  context.subscriptions.push(
+    vscode.workspace.registerFileSystemProvider('mdzip-markdown', new MdzMarkdownFsProvider())
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.compareMarkdown', async (resource?: vscode.Uri) => {
+      console.log('[MDZip] compareMarkdown command invoked');
+      try {
+        console.log('[MDZip] Showing compare dialog');
+        vscode.window.showInformationMessage('Starting MDZip markdown compare...');
+
+        console.log('[MDZip] Starting file selection');
+        let rightUri = resource;
+        if (!rightUri) {
+          const activeUri = vscode.window.activeTextEditor?.document.uri;
+          if (activeUri?.path.toLowerCase().endsWith('.mdz')) {
+            rightUri = activeUri;
+          }
+        }
+
+        if (!rightUri) {
+          console.log('[MDZip] Showing right file picker');
+          rightUri = await pickMdzFile('Select working .mdz file');
+          if (!rightUri) {
+            console.log('[MDZip] Right file cancelled');
+            return;
+          }
+        }
+        console.log('[MDZip] Right file selected:', rightUri.fsPath);
+
+        console.log('[MDZip] Showing left file picker');
+        const leftUri = await pickMdzFile('Select base .mdz file to compare');
+        if (!leftUri) {
+          console.log('[MDZip] Left file cancelled');
+          return;
+        }
+        console.log('[MDZip] Left file selected:', leftUri.fsPath);
+
+        console.log('[MDZip] Reading archives...');
+        vscode.window.showInformationMessage('Reading archives...');
+
+        // Read file, checking for unsaved changes
+        const readMdzFile = async (uri: vscode.Uri, side: string): Promise<Uint8Array> => {
+          // For custom editors (.mdz files), always ask user to save before comparing
+          // to ensure we're comparing the latest version
+          const isOpenInTab = Array.from(vscode.window.tabGroups.all)
+            .some(group => group.tabs.some(tab =>
+              (tab.input instanceof vscode.TabInputText || tab.input instanceof vscode.TabInputCustom) &&
+              tab.input.uri.fsPath === uri.fsPath
+            ));
+
+          if (isOpenInTab) {
+            const save = await vscode.window.showWarningMessage(
+              `${side} file is open. Save before comparing to ensure you're comparing the latest version?`,
+              'Save',
+              'Compare Anyway',
+              'Cancel'
+            );
+            if (save === 'Cancel') {
+              throw new Error('Cancelled by user');
+            }
+            if (save === 'Save') {
+              // Try saving the document
+              const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === uri.fsPath);
+              if (doc) {
+                await doc.save();
+              } else {
+                // For custom editors, use the files.save command
+                await vscode.commands.executeCommand('workbench.action.files.saveFiles', [uri]);
+              }
+            }
+          }
+
+          const bytes = await vscode.workspace.fs.readFile(uri);
+          if (bytes.length === 0) {
+            throw new Error(`File is empty or not saved: ${uri.fsPath}`);
+          }
+          return bytes;
+        };
+
+        const leftBytes = await readMdzFile(leftUri, 'Left');
+        const rightBytes = await readMdzFile(rightUri, 'Right');
+
+        vscode.window.showInformationMessage('Creating diff view...');
+
+        // Create virtual URIs using hash + path to ensure uniqueness and cache-safety
+        const leftHash = Date.now().toString(36);
+        const rightHash = Date.now().toString(36) + '2';
+        const leftVirtualUri = vscode.Uri.parse(`mdzip-markdown:///${leftHash}/${leftUri.fsPath}`);
+        const rightVirtualUri = vscode.Uri.parse(`mdzip-markdown:///${rightHash}/${rightUri.fsPath}`);
+
+        const leftLabel = path.basename(leftUri.fsPath);
+        const rightLabel = path.basename(rightUri.fsPath);
+        const title = `${leftLabel} ↔ ${rightLabel} (Markdown)`;
+
+        // Open the diff with virtual URIs (read-only, no dirty flags)
+        await vscode.commands.executeCommand('vscode.diff', leftVirtualUri, rightVirtualUri, title, {
+          preview: true
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`Compare failed: ${msg}`);
+        console.error('MDZip compare error:', err);
+        if (err instanceof Error) {
+          console.error('Stack:', err.stack);
+        }
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.compareWithGitBase', async (resource?: vscode.Uri) => {
+      try {
+        // Resolve the file URI from context menu, active custom editor tab, or file picker
+        let fileUri = resource;
+        if (!fileUri) {
+          for (const group of vscode.window.tabGroups.all) {
+            for (const tab of group.tabs) {
+              if (tab.input instanceof vscode.TabInputCustom &&
+                  tab.input.uri.path.toLowerCase().endsWith('.mdz')) {
+                fileUri = tab.input.uri;
+                break;
+              }
+            }
+            if (fileUri) break;
+          }
+        }
+        if (!fileUri) {
+          fileUri = await pickMdzFile('Select .mdz file to compare with git base');
+          if (!fileUri) return;
+        }
+
+        // Prompt to save if file is open and possibly dirty
+        const isOpenInTab = vscode.window.tabGroups.all.some(g =>
+          g.tabs.some(t =>
+            (t.input instanceof vscode.TabInputText || t.input instanceof vscode.TabInputCustom) &&
+            t.input.uri.fsPath === fileUri!.fsPath
+          )
+        );
+        if (isOpenInTab) {
+          const choice = await vscode.window.showWarningMessage(
+            'Save file before comparing with git base?',
+            'Save', 'Compare Anyway', 'Cancel'
+          );
+          if (choice === 'Cancel' || choice === undefined) return;
+          if (choice === 'Save') {
+            const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === fileUri!.fsPath);
+            if (doc) await doc.save();
+            else await vscode.commands.executeCommand('workbench.action.files.saveFiles', [fileUri]);
+          }
+        }
+
+        // Fetch git HEAD bytes and store in cache
+        const gitBytes = await getGitBaseBytes(fileUri);
+        const baseKey = Date.now().toString(36) + 'base';
+        MdzMarkdownFsProvider.cache.set(baseKey, new Uint8Array(gitBytes));
+
+        const workingKey = Date.now().toString(36) + 'work';
+        // working side: no cache entry → provider reads from disk
+
+        const baseName = path.basename(fileUri.fsPath);
+        const baseVirtualUri = vscode.Uri.parse(`mdzip-markdown:///${baseKey}/${fileUri.fsPath}`);
+        const workVirtualUri = vscode.Uri.parse(`mdzip-markdown:///${workingKey}/${fileUri.fsPath}`);
+        const title = `${baseName}: HEAD ↔ Working`;
+
+        await vscode.commands.executeCommand('vscode.diff', baseVirtualUri, workVirtualUri, title, {
+          preview: true
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`Git compare failed: ${msg}`);
+      }
     })
   );
 

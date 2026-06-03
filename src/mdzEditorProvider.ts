@@ -1,14 +1,13 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as fs from 'fs';
 import { MdzDocument } from './mdzDocument';
-import { buildNewArchiveBytesWithTitle } from './mdzArchiveUtils';
 import {
+  buildNewArchiveBytesWithTitle,
   displayTitleFromManifest,
   fileBaseNameFromPath,
   firstMarkdownHeading,
   suggestedTitleFromMarkdown,
-} from './shared/editorMetadata';
+} from '@mdzip/editor';
 
 /**
  * Custom editor provider for `.mdz` files.
@@ -170,6 +169,50 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           });
           break;
 
+        case 'workspaceChanged':
+          if (!isWorkspaceSnapshotMessage(message)) {
+            return;
+          }
+          await document.applyWorkspaceSnapshot({
+            archiveBytes: base64ToBytes(message.archiveBase64),
+            currentText: message.currentText,
+            currentPath: message.currentPath,
+            currentPathType: message.currentPathType,
+            dirty: message.dirty,
+          });
+          if (message.dirty) {
+            this._onDidChangeCustomDocument.fire({
+              document,
+              undo: () => {
+                /* no-op for now */
+              },
+              redo: () => {
+                /* no-op for now */
+              },
+            });
+          }
+          break;
+
+        case 'workspaceSaved':
+          if (!isWorkspaceSnapshotMessage(message)) {
+            return;
+          }
+          await document.applyWorkspaceSnapshot({
+            archiveBytes: base64ToBytes(message.archiveBase64),
+            currentText: message.currentText,
+            currentPath: message.currentPath,
+            currentPathType: message.currentPathType,
+            dirty: true,
+          });
+          await vscode.commands.executeCommand('workbench.action.files.save');
+          break;
+
+        case 'workspaceFailed':
+          if (typeof message.message === 'string') {
+            vscode.window.showErrorMessage(message.message);
+          }
+          break;
+
         case 'pasteImage':
           if (typeof message.archivePath !== 'string' || typeof message.base64Data !== 'string') {
             return;
@@ -209,10 +252,10 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           } catch (error) {
             const detail = error instanceof Error ? error.message : String(error);
             vscode.window.showErrorMessage(`Unable to update manifest title: ${detail}`);
-            await this._sendDocumentContent(webviewPanel.webview, document);
+            await this._sendWorkspaceEditorContent(webviewPanel.webview, document);
             return;
           }
-          await this._sendDocumentContent(webviewPanel.webview, document);
+          await this._sendWorkspaceEditorContent(webviewPanel.webview, document);
           this._onDidChangeCustomDocument.fire({
             document,
             undo: () => {
@@ -318,7 +361,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
         case 'ready':
           // Webview is ready — send initial content
-          await this._sendDocumentContent(webviewPanel.webview, document, initialMode);
+          await this._sendWorkspaceEditorContent(webviewPanel.webview, document);
           break;
       }
     });
@@ -328,7 +371,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       if (event.reason !== 'reload') {
         return;
       }
-      await this._sendDocumentContent(webviewPanel.webview, document);
+      await this._sendWorkspaceEditorContent(webviewPanel.webview, document);
     });
     webviewPanel.onDidDispose(() => {
       changeSubscription.dispose();
@@ -417,28 +460,24 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     } satisfies LoadMessage);
   }
 
+  /** Send document bytes to the shared browser editor runtime. */
+  private async _sendWorkspaceEditorContent(
+    webview: vscode.Webview,
+    document: MdzDocument
+  ): Promise<void> {
+    const bytes = await document.exportForWorkspaceEditor();
+    await webview.postMessage({
+      type: 'openWorkspace',
+      bytesBase64: bytesToBase64(bytes),
+      sourceFormat: document.sourceFormat,
+      fileName: path.posix.basename(document.uri.path),
+    } satisfies OpenWorkspaceMessage);
+  }
+
   /** Build the HTML for the webview panel. */
-  private _buildWebviewHtml(webview: vscode.Webview, document: MdzDocument): string {
+  private _buildWebviewHtml(webview: vscode.Webview, _document: MdzDocument): string {
     const mediaDir = path.join(this.context.extensionPath, 'media');
-    const iconsDir = path.join(mediaDir, 'icons');
-    const isMdzFile = document.sourceFormat === 'mdz' && document.uri.path.toLowerCase().endsWith('.mdz');
-
-    // Read bundled CSS and JS from the media directory
-    const cssPath = path.join(mediaDir, 'editor.css');
-    const jsPath = path.join(mediaDir, 'editor.js');
-    const markedPath = path.join(mediaDir, 'marked.min.js');
-    const navIconUri = webview.asWebviewUri(
-      vscode.Uri.file(path.join(iconsDir, 'mdzip-nav-icon.svg'))
-    );
-    const markdownIconUri = webview.asWebviewUri(
-      vscode.Uri.file(path.join(iconsDir, 'markdown-mark.svg'))
-    );
-
-    const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, 'utf8') : '';
-    const editorJs = fs.existsSync(jsPath) ? fs.readFileSync(jsPath, 'utf8') : '';
-    const markedJs = fs.existsSync(markedPath) ? fs.readFileSync(markedPath, 'utf8') : '';
-
-    // Build nonce for CSP
+    const scriptUri = webview.asWebviewUri(vscode.Uri.file(path.join(mediaDir, 'editor.bundle.js')));
     const nonce = getNonce();
 
     return /* html */ `<!DOCTYPE html>
@@ -448,105 +487,14 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'none';
                  img-src data: ${webview.cspSource};
-                 style-src 'nonce-${nonce}';
+                 style-src ${webview.cspSource} 'unsafe-inline';
                  script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MDZip Editor</title>
-  <style nonce="${nonce}">${css}</style>
 </head>
-<body${isMdzFile ? '' : ' class="markdown-source"'} data-markdown-icon-uri="${markdownIconUri}">
-  <div id="toolbar">
-    <div id="toolbar-left">
-      <button id="btn-nav" class="icon-toggle" title="Toggle contents" aria-label="Toggle contents" type="button"${isMdzFile ? '' : ' hidden'}>
-        <img class="toggle-icon toggle-icon-image" src="${navIconUri}" alt="" aria-hidden="true" />
-        <span class="visually-hidden">Toggle contents</span>
-      </button>
-      <button id="btn-title" title="Edit document title"${isMdzFile ? '' : ' hidden'}></button>
-    </div>
-    <div id="toolbar-buttons" role="group" aria-label="Editor layout">
-      <button id="btn-preview" class="icon-toggle active" title="Preview" aria-label="Preview" type="button">
-        <svg class="toggle-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-          <path d="M8 3C4 3 1.7 6.2 1.2 7c.5.8 2.8 4 6.8 4s6.3-3.2 6.8-4c-.5-.8-2.8-4-6.8-4zm0 1.5c2.8 0 4.7 2 5.4 2.9-.7.9-2.6 2.9-5.4 2.9S3.3 8.3 2.6 7.4C3.3 6.5 5.2 4.5 8 4.5zm0 1.1A1.9 1.9 0 1 0 8 9.4a1.9 1.9 0 0 0 0-3.8z"/>
-        </svg>
-        <span class="visually-hidden">Preview</span>
-      </button>
-      <button id="btn-side-by-side" class="icon-toggle" title="Split" aria-label="Split" type="button">
-        <svg class="toggle-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-          <path d="M2 2.5h12v11H2v-11zm1.2 1.2v8.6h4V3.7h-4zm5.6 0v8.6h4V3.7h-4z"/>
-        </svg>
-        <span class="visually-hidden">Split</span>
-      </button>
-      <button id="btn-edit" class="icon-toggle" title="Edit" aria-label="Edit" type="button">
-        <svg class="toggle-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-          <path d="M11.5 1.6a1.6 1.6 0 0 1 2.3 2.3L7 10.7l-2.8.8.8-2.8 6.5-6.5zm-6 7.4-.4 1.2 1.2-.4 5.7-5.7-.8-.8L5.5 9zM2.2 13h11.6v1H2.2z"/>
-        </svg>
-        <span class="visually-hidden">Edit</span>
-      </button>
-    </div>
-    <div id="toolbar-controls">
-      <div id="zoom-controls">
-        <button id="btn-zoom-toggle" class="icon-toggle" title="Zoom controls" aria-label="Zoom controls" aria-expanded="false" aria-controls="zoom-popover" type="button">
-          <svg class="toggle-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-            <path d="M6.7 2a4.7 4.7 0 0 1 3.7 7.6l3.1 3.1-1 1-3.1-3.1A4.7 4.7 0 1 1 6.7 2zm0 1.3a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8z"/>
-            <path class="zoom-toggle-plus" d="M6.1 4.6h1.2v1.7H9v1.2H7.3v1.7H6.1V7.5H4.4V6.3h1.7V4.6z"/>
-            <path class="zoom-toggle-minus" d="M4.4 6.3H9v1.2H4.4V6.3z"/>
-          </svg>
-          <span class="visually-hidden">Zoom controls</span>
-        </button>
-        <div id="zoom-popover" class="hidden" role="group" aria-label="Zoom">
-          <span id="zoom-level" aria-live="polite">100%</span>
-          <div id="zoom-stepper" role="group" aria-label="Zoom steps">
-            <button id="btn-zoom-out" title="Zoom out" aria-label="Zoom out" type="button">-</button>
-            <button id="btn-zoom-in" title="Zoom in" aria-label="Zoom in" type="button">+</button>
-          </div>
-          <button id="btn-zoom-reset" title="Reset zoom" type="button">Reset</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div id="title-dialog-backdrop" class="hidden" role="dialog" aria-modal="true" aria-labelledby="title-dialog-heading">
-    <div id="title-dialog">
-      <h3 id="title-dialog-heading">Set Document Title</h3>
-      <p id="title-dialog-help">This is the package-level title stored in manifest.json (not the file name).</p>
-      <p id="title-dialog-help-usage">Shown by readers and inspectors as document metadata.</p>
-      <input id="title-input" type="text" maxlength="120" />
-      <p id="title-dialog-validation" class="hidden">Title cannot be empty.</p>
-      <p id="title-dialog-fallback">If unset, consumers may fall back to entry point, filename, or first heading.</p>
-      <div id="title-dialog-actions">
-        <button id="btn-title-reset" type="button">Reset</button>
-        <button id="btn-title-cancel" type="button">Cancel</button>
-        <button id="btn-title-save" type="button">Save</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="workspace-shell">
-    <aside id="nav-pane" aria-label="Package contents">
-      <div id="nav-tree" role="tree"></div>
-    </aside>
-
-    <div id="nav-resizer" role="separator" aria-orientation="vertical" aria-label="Resize contents pane"></div>
-
-    <div id="pane-stack">
-      <div id="edit-pane" class="pane">
-        <div id="editor-wrap">
-          <div id="editor-line-numbers" aria-hidden="true"><pre id="editor-line-numbers-content"></pre></div>
-          <pre id="editor-highlight" aria-hidden="true"><code></code></pre>
-          <textarea id="editor" spellcheck="false"></textarea>
-        </div>
-      </div>
-
-      <div id="split-resizer" role="separator" aria-orientation="vertical" aria-label="Resize split panes"></div>
-
-      <div id="preview-pane" class="pane active">
-        <div id="preview-content"></div>
-      </div>
-    </div>
-  </div>
-
-  <script nonce="${nonce}">${markedJs}</script>
-  <script nonce="${nonce}">${editorJs}</script>
+<body>
+  <main id="mdzip-editor-root"></main>
+  <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
@@ -956,10 +904,19 @@ interface WebviewMessage {
     | 'scrollSync'
     | 'modeChanged'
     | 'openSideBySide'
-    | 'setLayout';
+    | 'setLayout'
+    | 'workspaceChanged'
+    | 'workspaceSaved'
+    | 'workspaceFailed';
   markdown?: string;
   archivePath?: string;
+  archiveBase64?: string;
   base64Data?: string;
+  currentText?: string;
+  currentPath?: string;
+  currentPathType?: 'markdown' | 'text' | 'image' | 'binary';
+  dirty?: boolean;
+  message?: string;
   title?: string;
   path?: string;
   ratio?: number;
@@ -986,6 +943,13 @@ interface LoadMessage {
   orphanedAssetPaths: string[];
   initialMode?: EditorMode;
   layout: LayoutMode;
+}
+
+interface OpenWorkspaceMessage {
+  type: 'openWorkspace';
+  bytesBase64: string;
+  sourceFormat: 'mdz' | 'markdown';
+  fileName: string;
 }
 
 interface ScrollSyncMessage {
@@ -1021,4 +985,29 @@ function getNonce(): string {
 
 function sanitizePathSegment(segment: string): string {
   return segment.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64');
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  return Uint8Array.from(Buffer.from(value, 'base64'));
+}
+
+function isWorkspaceSnapshotMessage(message: WebviewMessage): message is WebviewMessage & {
+  archiveBase64: string;
+  currentText: string;
+  currentPath: string;
+  currentPathType: 'markdown' | 'text' | 'image' | 'binary';
+  dirty: boolean;
+} {
+  return typeof message.archiveBase64 === 'string'
+    && typeof message.currentText === 'string'
+    && typeof message.currentPath === 'string'
+    && (message.currentPathType === 'markdown'
+      || message.currentPathType === 'text'
+      || message.currentPathType === 'image'
+      || message.currentPathType === 'binary')
+    && typeof message.dirty === 'boolean';
 }

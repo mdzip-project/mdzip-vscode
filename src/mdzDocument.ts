@@ -10,8 +10,9 @@ import {
   updateManifestTitleInArchive,
   updateMarkdownInArchive,
   OpenedArchive,
-} from './mdzArchiveUtils';
-import { fileBaseNameFromPath, suggestedTitleFromMarkdown } from './shared/editorMetadata';
+  fileBaseNameFromPath,
+  suggestedTitleFromMarkdown,
+} from '@mdzip/editor';
 
 /**
  * Represents an open .mdz document.
@@ -206,6 +207,30 @@ export class MdzDocument implements vscode.CustomDocument {
     this._currentMarkdown = newMarkdown;
     this._isDirty = true;
     this._onDidChange.fire({ reason: 'edit' });
+  }
+
+  /** Accept a full workspace snapshot produced by the shared browser editor. */
+  public async applyWorkspaceSnapshot(snapshot: {
+    archiveBytes: Uint8Array;
+    currentText: string;
+    currentPath: string;
+    currentPathType: 'markdown' | 'text' | 'image' | 'binary';
+    dirty: boolean;
+  }): Promise<void> {
+    this._archiveBytes = snapshot.archiveBytes;
+    this._content = await openMdzArchive(snapshot.archiveBytes);
+    this._currentMarkdown = snapshot.currentText;
+    this._currentMarkdownPath = snapshot.currentPath;
+    this._currentPathType = snapshot.currentPathType;
+    this._isDirty = snapshot.dirty;
+  }
+
+  /** Return bytes in the format the shared browser editor expects to open. */
+  public async exportForWorkspaceEditor(): Promise<Uint8Array> {
+    if (this._sourceFormat === 'markdown') {
+      return new TextEncoder().encode(this._currentMarkdown);
+    }
+    return this._archiveBytesWithPendingText();
   }
 
   /** Add or replace an image asset in the archive without discarding pending markdown edits. */
