@@ -19,6 +19,13 @@ type ToolErrorPayload = {
   candidatePaths?: string[];
 };
 
+type SearchMatch = {
+  path: string;
+  lineNumber: number;
+  columnNumber: number;
+  snippet: string;
+};
+
 type ResolveContext = {
   requestedEntryPath: string | null;
   resolvedMarkdownPath: string;
@@ -117,6 +124,37 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
           },
           required: ['archivePath'],
+        },
+      },
+      {
+        name: 'mdz_search_text',
+        description:
+          'Search UTF-8 text entries inside an .mdz archive. Use this directly for grep/find/search requests instead of asking whether to inspect the archive another way.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            archivePath: {
+              type: 'string',
+              description: 'Absolute or workspace-relative path to the .mdz file.',
+            },
+            query: {
+              type: 'string',
+              description: 'Text or regular expression to search for inside archive text entries.',
+            },
+            caseSensitive: {
+              type: 'boolean',
+              description: 'Whether matching is case-sensitive. Defaults to false.',
+            },
+            regex: {
+              type: 'boolean',
+              description: 'Interpret query as a JavaScript regular expression. Defaults to false.',
+            },
+            maxResults: {
+              type: 'number',
+              description: 'Maximum number of matching lines to return. Defaults to 100 and is clamped to 1..1000.',
+            },
+          },
+          required: ['archivePath', 'query'],
         },
       },
       {
@@ -313,6 +351,42 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<ToolResult>
           {
             type: 'text',
             text: JSON.stringify(entries, null, 2),
+          },
+        ],
+      };
+    }
+
+    case 'mdz_search_text': {
+      const archivePath = stringArg(args, 'archivePath');
+      const query = stringArg(args, 'query');
+      const caseSensitive = optionalBooleanArg(args, 'caseSensitive') ?? false;
+      const useRegex = optionalBooleanArg(args, 'regex') ?? false;
+      const maxResults = clampInteger(optionalNumberArg(args, 'maxResults') ?? 100, 1, 1000);
+      const archive = await loadArchive(archivePath);
+      const matches = await searchArchiveText(archive, query, {
+        caseSensitive,
+        maxResults,
+        regex: useRegex,
+      });
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                archivePath,
+                query,
+                caseSensitive,
+                regex: useRegex,
+                maxResults,
+                matchCount: matches.length,
+                truncated: matches.length >= maxResults,
+                matches,
+              },
+              null,
+              2
+            ),
           },
         ],
       };
@@ -600,6 +674,11 @@ function optionalNumberArg(args: ToolArgs, key: string): number | undefined {
   return value;
 }
 
+function optionalBooleanArg(args: ToolArgs, key: string): boolean | undefined {
+  const value = args?.[key];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
 function clampInteger(value: number, min: number, max: number): number {
   const rounded = Math.round(value);
   if (rounded < min) {
@@ -609,6 +688,107 @@ function clampInteger(value: number, min: number, max: number): number {
     return max;
   }
   return rounded;
+}
+
+async function searchArchiveText(
+  archive: MdzArchiveCore,
+  query: string,
+  options: { caseSensitive: boolean; maxResults: number; regex: boolean }
+): Promise<SearchMatch[]> {
+  const matcher = createTextMatcher(query, options.caseSensitive, options.regex);
+  const matches: SearchMatch[] = [];
+
+  for (const entry of archive.listEntries()) {
+    if (matches.length >= options.maxResults) {
+      break;
+    }
+    if (entry.isDirectory) {
+      continue;
+    }
+
+    const entryPath = MdzArchiveCore.normalizePath(entry.path);
+    const text = await readEntryAsUtf8Text(archive, entryPath);
+    if (text === undefined) {
+      continue;
+    }
+
+    const lines = text.split(/\r\n|\r|\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      if (matches.length >= options.maxResults) {
+        break;
+      }
+
+      const columnIndex = matcher(lines[index]);
+      if (columnIndex === undefined) {
+        continue;
+      }
+
+      matches.push({
+        path: entryPath,
+        lineNumber: index + 1,
+        columnNumber: columnIndex + 1,
+        snippet: truncateSnippet(lines[index]),
+      });
+    }
+  }
+
+  return matches;
+}
+
+function createTextMatcher(
+  query: string,
+  caseSensitive: boolean,
+  regex: boolean
+): (line: string) => number | undefined {
+  if (regex) {
+    let pattern: RegExp;
+    try {
+      pattern = new RegExp(query, caseSensitive ? '' : 'i');
+    } catch (error) {
+      throw toolError(
+        'INVALID_REGEX',
+        error instanceof Error ? error.message : String(error),
+        'Retry mdz_search_text with a valid JavaScript regular expression, or set regex to false for literal text search.'
+      );
+    }
+
+    return (line) => {
+      const match = pattern.exec(line);
+      return match?.index;
+    };
+  }
+
+  const needle = caseSensitive ? query : query.toLocaleLowerCase();
+  return (line) => {
+    const haystack = caseSensitive ? line : line.toLocaleLowerCase();
+    const index = haystack.indexOf(needle);
+    return index >= 0 ? index : undefined;
+  };
+}
+
+async function readEntryAsUtf8Text(archive: MdzArchiveCore, entryPath: string): Promise<string | undefined> {
+  if (mimeTypeForImagePath(entryPath)) {
+    return undefined;
+  }
+
+  try {
+    const bytes = await archive.readBytes(entryPath);
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    if (text.includes('\u0000')) {
+      return undefined;
+    }
+    return text;
+  } catch {
+    return undefined;
+  }
+}
+
+function truncateSnippet(line: string): string {
+  const trimmed = line.trim();
+  if (trimmed.length <= 240) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, 237)}...`;
 }
 
 async function rewriteMarkdownImagePathsToDataUrls(

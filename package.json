@@ -2,7 +2,7 @@
   "name": "mdzip-vscode",
   "displayName": "MDZip (.mdz) Editor",
   "description": "Read and write MDZip (.mdz) files including packaged images. Single document mode.",
-  "version": "0.1.140",
+  "version": "0.1.182",
   "icon": "media/icons/mdzip-marketplace-icon.png",
   "publisher": "mdzip-project",
   "license": "Apache-2.0",
@@ -81,12 +81,22 @@
     "commands": [
       {
         "command": "mdzip.newFile",
-        "title": "MDZip: New .mdz Document",
+        "title": "MDZip: New .mdz file...",
         "category": "MDZip",
         "icon": {
           "light": "media/icons/mdzip-explorer-icon.svg",
           "dark": "media/icons/mdzip-explorer-icon.svg"
         }
+      },
+      {
+        "command": "mdzip.configureTemplateFolder",
+        "title": "MDZip: Configure Template Folder",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.openTemplatesFolder",
+        "title": "MDZip: Open Templates Folder",
+        "category": "MDZip"
       },
       {
         "command": "mdzip.convertMarkdownToMdz",
@@ -104,7 +114,12 @@
       },
       {
         "command": "mdzip.compareWithGitBase",
-        "title": "MDZip: Compare with Git Base",
+        "title": "MDZip: Compare Document Markdown with Git Base",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.compareArchiveWithGitBase",
+        "title": "MDZip: Compare Archive Contents with Git Base",
         "category": "MDZip"
       },
       {
@@ -120,6 +135,11 @@
       {
         "command": "mdzip.enableUserMcp",
         "title": "MDZip: Enable User MCP Server",
+        "category": "MDZip"
+      },
+      {
+        "command": "mdzip.enableCodexMcp",
+        "title": "MDZip: Enable Codex MCP Server",
         "category": "MDZip"
       },
       {
@@ -153,10 +173,34 @@
         "category": "MDZip"
       }
     ],
+    "configuration": {
+      "title": "MDZip",
+      "properties": {
+        "mdzip.templates.path": {
+          "type": "string",
+          "default": "",
+          "description": "Primary folder containing MDZip templates. Relative paths beginning with ./ or ../ resolve from the first workspace folder."
+        },
+        "mdzip.templates.additionalPaths": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional folders containing MDZip templates. Relative paths beginning with ./ or ../ resolve from the first workspace folder."
+        }
+      }
+    },
     "menus": {
       "commandPalette": [
         {
           "command": "mdzip.newFile"
+        },
+        {
+          "command": "mdzip.configureTemplateFolder"
+        },
+        {
+          "command": "mdzip.openTemplatesFolder"
         },
         {
           "command": "mdzip.convertMarkdownToMdz"
@@ -168,6 +212,9 @@
           "command": "mdzip.compareWithGitBase"
         },
         {
+          "command": "mdzip.compareArchiveWithGitBase"
+        },
+        {
           "command": "mdzip.copyMcpConfigSnippet"
         },
         {
@@ -175,6 +222,9 @@
         },
         {
           "command": "mdzip.enableUserMcp"
+        },
+        {
+          "command": "mdzip.enableCodexMcp"
         },
         {
           "command": "mdzip.openGettingStarted"
@@ -198,7 +248,7 @@
       "explorer/context": [
         {
           "command": "mdzip.newFile",
-          "when": "explorerResourceIsFolder",
+          "when": "resourceScheme == file",
           "group": "navigation@10"
         },
         {
@@ -215,6 +265,11 @@
           "command": "mdzip.compareWithGitBase",
           "when": "resourceExtname == .mdz",
           "group": "navigation@13"
+        },
+        {
+          "command": "mdzip.compareArchiveWithGitBase",
+          "when": "resourceExtname == .mdz",
+          "group": "navigation@14"
         }
       ],
       "editor/title": [
@@ -236,6 +291,22 @@
         {
           "command": "mdzip.compareWithGitBase",
           "when": "resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.compareArchiveWithGitBase",
+          "when": "resourceExtname == .mdz"
+        }
+      ],
+      "scm/resourceState/context": [
+        {
+          "command": "mdzip.compareWithGitBase",
+          "when": "scmProvider == git",
+          "group": "3_mdzip@1"
+        },
+        {
+          "command": "mdzip.compareArchiveWithGitBase",
+          "when": "scmProvider == git",
+          "group": "3_mdzip@2"
         }
       ]
     },
@@ -341,9 +412,9 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@mdzip/editor": "file:../mdzip-editor/packages/editor",
     "@modelcontextprotocol/sdk": "^1.17.4",
     "marked": "^15.0.12",
-    "mdzip-core-js": "1.1.1"
+    "mdzip-core-js": "1.1.1",
+    "mdzip-editor": "^0.1.1"
   }
 }

@@ -7,7 +7,7 @@ import {
   fileBaseNameFromPath,
   firstMarkdownHeading,
   suggestedTitleFromMarkdown,
-} from '@mdzip/editor';
+} from 'mdzip-editor';
 
 /**
  * Custom editor provider for `.mdz` files.
@@ -19,6 +19,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
   public static readonly VIEW_TYPE = 'mdzip.mdzEditor';
   public static readonly MARKDOWN_VIEW_TYPE = 'mdzip.mdEditor';
   private static readonly _nextOpenModes = new Map<string, EditorMode[]>();
+  private static readonly _nextOpenLayouts = new Map<string, LayoutMode[]>();
   private static _instance: MdzEditorProvider | undefined;
   private readonly _panelsByDocument = new Map<string, Set<vscode.WebviewPanel>>();
   private readonly _modeByWebview = new WeakMap<vscode.Webview, EditorMode>();
@@ -35,11 +36,23 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     MdzEditorProvider.enqueueInitialModes(uri, ['preview']);
   }
 
+  /** Hint that the next open for this URI should start in split mode. */
+  public static markNextOpenInSplit(uri: vscode.Uri): void {
+    MdzEditorProvider.enqueueInitialLayouts(uri, ['split']);
+  }
+
   /** Queue one or more initial modes for upcoming editor resolves on a URI. */
   public static enqueueInitialModes(uri: vscode.Uri, modes: EditorMode[]): void {
     const key = uri.toString();
     const existing = MdzEditorProvider._nextOpenModes.get(key) ?? [];
     MdzEditorProvider._nextOpenModes.set(key, [...existing, ...modes]);
+  }
+
+  /** Queue one or more initial layouts for upcoming editor resolves on a URI. */
+  public static enqueueInitialLayouts(uri: vscode.Uri, layouts: LayoutMode[]): void {
+    const key = uri.toString();
+    const existing = MdzEditorProvider._nextOpenLayouts.get(key) ?? [];
+    MdzEditorProvider._nextOpenLayouts.set(key, [...existing, ...layouts]);
   }
 
   /** Close all open MDZip custom-editor panes for a given URI. */
@@ -66,6 +79,22 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       MdzEditorProvider._nextOpenModes.set(key, queue);
     }
     return nextMode;
+  }
+
+  private static consumeInitialLayout(uri: vscode.Uri): LayoutMode | undefined {
+    const key = uri.toString();
+    const queue = MdzEditorProvider._nextOpenLayouts.get(key);
+    if (!queue || queue.length === 0) {
+      return undefined;
+    }
+
+    const nextLayout = queue.shift();
+    if (!nextLayout || queue.length === 0) {
+      MdzEditorProvider._nextOpenLayouts.delete(key);
+    } else {
+      MdzEditorProvider._nextOpenLayouts.set(key, queue);
+    }
+    return nextLayout;
   }
 
   /** Register the provider and return a disposable. */
@@ -138,6 +167,10 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
     const initialMode: EditorMode =
       MdzEditorProvider.consumeInitialMode(document.uri) ?? this._suggestInitialMode(document.uri);
+    const initialLayout = MdzEditorProvider.consumeInitialLayout(document.uri);
+    if (initialLayout === 'split') {
+      this._splitLayoutUris.add(document.uri.toString());
+    }
     this._modeByWebview.set(webviewPanel.webview, initialMode);
     this._isMarkdownEditorByWebview.set(
       webviewPanel.webview,
@@ -147,8 +180,6 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     webviewPanel.webview.options = {
       enableScripts: true,
     };
-
-    webviewPanel.webview.html = this._buildWebviewHtml(webviewPanel.webview, document);
 
     // Handle messages from the webview
     webviewPanel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
@@ -383,6 +414,8 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       }
       void this._broadcastLayoutState(document.uri);
     });
+
+    webviewPanel.webview.html = this._buildWebviewHtml(webviewPanel.webview, document);
   }
 
   public async saveCustomDocument(
@@ -471,6 +504,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       bytesBase64: bytesToBase64(bytes),
       sourceFormat: document.sourceFormat,
       fileName: path.posix.basename(document.uri.path),
+      layout: this._layoutModeForUri(document.uri, webview),
     } satisfies OpenWorkspaceMessage);
   }
 
@@ -829,7 +863,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     ]);
 
     await vscode.workspace.fs.writeFile(targetUri, archiveBytes);
-    MdzEditorProvider.markNextOpenInEdit(targetUri);
+    MdzEditorProvider.markNextOpenInSplit(targetUri);
     await vscode.commands.executeCommand('vscode.openWith', targetUri, MdzEditorProvider.VIEW_TYPE);
   }
 
@@ -950,6 +984,7 @@ interface OpenWorkspaceMessage {
   bytesBase64: string;
   sourceFormat: 'mdz' | 'markdown';
   fileName: string;
+  layout: LayoutMode;
 }
 
 interface ScrollSyncMessage {

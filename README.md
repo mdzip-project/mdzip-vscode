@@ -12,7 +12,7 @@ Visual Studio Code extension to read and write MDZip (`.mdz`) files, including p
 - **Document title editing** - set the package title from the toolbar.
 - **Archive contents browser** - browse Markdown, text, image, and binary entries inside `.mdz` archives.
 - **Full save / Save As / Revert** - honors the standard VS Code document lifecycle.
-- **New document** - create a fresh `.mdz` archive from the Command Palette or folder context menu.
+- **Template-based new documents** - create a fresh `.mdz` archive from built-in or custom templates using the Command Palette or folder context menu.
 - **Markdown conversion** - convert a `.md` file to an adjacent `.mdz`.
 - **Bundled MCP server** - let compatible AI agents inspect `.mdz` archives without extracting image files to disk.
 
@@ -40,10 +40,27 @@ Save with <kbd>Ctrl+S</kbd> or <kbd>Cmd+S</kbd> on macOS. The extension rewrites
 Open the Command Palette (<kbd>Ctrl+Shift+P</kbd>) and run:
 
 ```text
-MDZip: New .mdz Document
+MDZip: New .mdz file...
 ```
 
-You will be prompted to choose a save location. The new archive contains a starter `index.md` and a `manifest.json` set to document mode.
+Pick `Default document`, `Agile Story`, or a configured custom template. The command is also available from the Explorer folder context menu.
+
+Custom templates can come from folders configured with `MDZip: Configure Template Folder`. Template folders may include Markdown, images, supporting files, and an optional `template.config.json` with prompted parameters:
+
+```json
+{
+  "parameters": [
+    {
+      "name": "Story ID",
+      "variable": "story_id",
+      "description": "Ticket or work item identifier",
+      "pattern": "[A-Za-z]+-[0-9]+"
+    }
+  ]
+}
+```
+
+Use placeholders such as `{title}`, `{filename}`, `{date}`, `{datetime}`, and configured parameter variables inside template Markdown or file paths.
 
 ### Converting Markdown to MDZip
 
@@ -61,7 +78,9 @@ If a Markdown image does not render in Preview, verify that the Markdown path ex
 
 ## Commands
 
-- `MDZip: New .mdz Document`
+- `MDZip: New .mdz file...`
+- `MDZip: Configure Template Folder`
+- `MDZip: Open Templates Folder`
 - `MDZip: Convert .md To .mdz`
 - `MDZip: Copy MCP Server Config Snippet`
 - `MDZip: Enable Workspace MCP Server`
@@ -92,6 +111,7 @@ When VS Code prompts you to trust or start the bundled MDZip MCP server, approve
 - `mdz_review_document` - preferred first call for `.mdz` review, analysis, and summarization requests; returns markdown and referenced images together as MCP content.
 - `upsert_canonical_document` - updates the manifest-first canonical Markdown document.
 - `mdz_list_entries` - lists archive entries.
+- `mdz_search_text` - searches UTF-8 text entries inside an `.mdz` archive for grep/find-style requests.
 - `mdz_read_text` - reads a text entry such as `manifest.json` or `index.md`.
 - `mdz_read_image` - returns image content directly as an MCP image payload.
 - `mdz_read_markdown_embedded_images` - returns markdown with archive image links rewritten as data URLs.

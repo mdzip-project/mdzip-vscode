@@ -1,5 +1,32 @@
 # Change Log
 
+## [0.1.182] - 2026-06-04
+### Added
+- Added template-based `.mdz` document creation with built-in templates, custom template folders, folder templates, and prompted template parameters.
+- Added `MDZip: Enable Codex MCP Server` and a first-run AI tool setup flow for writing Codex MCP configuration.
+- Added archive-level Git comparison with `MDZip: Compare Archive Contents with Git Base`, including canonical Markdown and archive inventory diffs.
+- Added `mdz_search_text` so MCP clients can search UTF-8 text entries inside `.mdz` archives directly.
+
+### Changed
+- Switched the VS Code webview to the published `mdzip-editor` package and opened converted/new documents in split layout by default.
+- Improved Git compare command handling from editor tabs, Explorer menus, and source-control resource contexts.
+
+### Fixed
+- Refreshed clean open editors when their backing `.mdz` or `.md` file changes on disk.
+
+## [0.1.168] - 2026-06-04
+### Added
+- Added `MDZip: New .mdz file...` with built-in Default document and Agile Story templates.
+- Added configurable template folders, folder-based templates, custom parameter prompts, and template folder helper commands.
+
+## [0.1.165] - 2026-06-03
+### Fixed
+- Refreshed open MDZip custom editors when the backing `.mdz` or `.md` file changes on disk and the editor has no unsaved local edits.
+
+## [0.1.164] - 2026-06-03
+### Added
+- Added `mdz_search_text` so MCP clients can search UTF-8 text entries inside `.mdz` archives directly.
+
 ## [0.1.112] - 2026-06-01
 ### Changed
 - Switched `mdzip-core-js` from a local tarball dependency to the published npm package at version `1.1.1`.

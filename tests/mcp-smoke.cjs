@@ -46,13 +46,14 @@ async function main() {
 
     try {
       await testCanonicalManifestRead(client, fixtures.canonicalSingle);
+      await testArchiveTextSearch(client, fixtures.canonicalSingle);
       await testAmbiguousReadError(client, fixtures.ambiguousMultiMarkdown);
       await testCanonicalWriteSuccess(client, fixtures.canonicalSingle);
       await testCanonicalWriteMissingEntrypoint(client, fixtures.fallbackSingleMarkdown);
       await testCanonicalWriteAmbiguousEntrypoint(client, fixtures.ambiguousMultiMarkdown);
       await testCanonicalWriteNoMarkdownEntries(client, fixtures.noMarkdown);
       await testErrorPayloadConsistency(client, fixtures.canonicalSingle);
-      console.log('MCP smoke tests passed: T1, T4, T5, T6, T7, T8, T9');
+      console.log('MCP smoke tests passed: T1, T2, T4, T5, T6, T7, T8, T9');
     } finally {
       await client.close();
     }
@@ -172,6 +173,38 @@ async function testAmbiguousReadError(client, archivePath) {
   assert.equal(payload.code, 'AMBIGUOUS_MARKDOWN_ENTRYPOINT');
   assert.ok(Array.isArray(payload.candidatePaths), 'candidatePaths should be present for ambiguity');
   assert.ok(String(payload.nextAction || '').includes('manifest.entryPoint'));
+}
+
+async function testArchiveTextSearch(client, archivePath) {
+  const result = await client.callTool({
+    name: 'mdz_search_text',
+    arguments: {
+      archivePath,
+      query: 'hello canonical',
+    },
+  });
+
+  assert.ok(!result.isError, 'mdz_search_text should succeed for canonical archive');
+  const payload = parseFirstTextJson(result);
+
+  assert.equal(payload.matchCount, 1);
+  assert.equal(payload.matches[0].path, 'index.md');
+  assert.equal(payload.matches[0].lineNumber, 3);
+  assert.ok(payload.matches[0].snippet.includes('Hello canonical.'));
+
+  const regexResult = await client.callTool({
+    name: 'mdz_search_text',
+    arguments: {
+      archivePath,
+      query: 'canonical\\.$',
+      regex: true,
+      caseSensitive: false,
+    },
+  });
+
+  assert.ok(!regexResult.isError, 'mdz_search_text regex search should succeed');
+  const regexPayload = parseFirstTextJson(regexResult);
+  assert.equal(regexPayload.matchCount, 1);
 }
 
 async function testCanonicalWriteSuccess(client, canonicalArchivePath) {

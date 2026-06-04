@@ -1,18 +1,63 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as os from 'os';
+import { execFile } from 'child_process';
 import type { GitExtension } from './vendor/git';
 import { MdzEditorProvider } from './mdzEditorProvider';
+import { MdzDiffPanel } from './mdzDiffPanel';
 import {
-  buildNewArchiveWithTitle,
+  configureTemplateFolder,
+  createMdzFromTemplate,
+  openTemplatesFolder,
+} from './mdzTemplates';
+import {
   buildNewArchiveBytesWithTitle,
-  fileBaseNameFromPath,
   readCanonicalMarkdown,
   suggestedTitleFromMarkdown,
-} from '@mdzip/editor';
+} from 'mdzip-editor';
 
 const BUNDLED_MCP_SERVER_LABEL = 'MDZip MCP Server';
 const BUNDLED_MCP_SERVER_KEY = 'MDZip';
 const LEGACY_BUNDLED_MCP_SERVER_KEY = 'mdzip';
+let mdzipOutputChannel: vscode.OutputChannel | undefined;
+
+function logInfo(message: string, ...details: unknown[]): void {
+  const line = formatLogLine('INFO', message, details);
+  mdzipOutputChannel?.appendLine(line);
+  console.log(`[MDZip] ${message}`, ...details);
+}
+
+function logError(message: string, error?: unknown): void {
+  const details = error === undefined ? [] : [formatError(error)];
+  mdzipOutputChannel?.appendLine(formatLogLine('ERROR', message, details));
+  console.error(`[MDZip] ${message}`, error);
+}
+
+function formatLogLine(level: 'INFO' | 'ERROR', message: string, details: readonly unknown[]): string {
+  const suffix = details.length > 0 ? ` ${details.map(formatLogDetail).join(' ')}` : '';
+  return `${new Date().toISOString()} [${level}] ${message}${suffix}`;
+}
+
+function formatLogDetail(detail: unknown): string {
+  if (typeof detail === 'string') {
+    return detail;
+  }
+  if (detail instanceof Error) {
+    return formatError(detail);
+  }
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return String(detail);
+  }
+}
+
+function formatError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack ?? error.message;
+  }
+  return String(error);
+}
 
 async function pickMdzFile(prompt: string): Promise<vscode.Uri | undefined> {
   const result = await vscode.window.showOpenDialog({
@@ -25,7 +70,7 @@ async function pickMdzFile(prompt: string): Promise<vscode.Uri | undefined> {
   return result?.[0];
 }
 
-async function getGitBaseBytes(fileUri: vscode.Uri): Promise<Buffer> {
+async function getGitBaseBytes(fileUri: vscode.Uri): Promise<Buffer | undefined> {
   const gitExt = vscode.extensions.getExtension<GitExtension>('vscode.git');
   if (!gitExt) throw new Error('Git extension not available');
   if (!gitExt.isActive) await gitExt.activate();
@@ -41,17 +86,105 @@ async function getGitBaseBytes(fileUri: vscode.Uri): Promise<Buffer> {
   try {
     return await repo.buffer('HEAD', relPath);
   } catch {
-    throw new Error(`File has no git history: ${path.basename(fileUri.fsPath)}`);
+    return undefined;
   }
+}
+
+function resourceUriFromCommandArg(resource?: unknown): vscode.Uri | undefined {
+  if (Array.isArray(resource)) {
+    return resourceUriFromCommandArg(resource[0]);
+  }
+  if (resource instanceof vscode.Uri) {
+    return resource;
+  }
+  if (resource && typeof resource === 'object' && 'resourceUri' in resource) {
+    const resourceUri = (resource as { resourceUri?: unknown }).resourceUri;
+    if (resourceUri instanceof vscode.Uri) {
+      return resourceUri;
+    }
+  }
+  return undefined;
+}
+
+function originalUriFromCommandArg(resource: unknown, fallback: vscode.Uri): vscode.Uri {
+  if (Array.isArray(resource)) {
+    return originalUriFromCommandArg(resource[0], fallback);
+  }
+  if (resource && typeof resource === 'object' && 'originalUri' in resource) {
+    const originalUri = (resource as { originalUri?: unknown }).originalUri;
+    if (originalUri instanceof vscode.Uri) {
+      return originalUri;
+    }
+  }
+  return fallback;
+}
+
+async function resolveGitCompareTarget(
+  resource: unknown
+): Promise<{ fileUri: vscode.Uri; baseUri: vscode.Uri } | undefined> {
+  let fileUri = resourceUriFromCommandArg(resource);
+
+  if (!fileUri) {
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        if (tab.input instanceof vscode.TabInputCustom &&
+            tab.input.uri.path.toLowerCase().endsWith('.mdz')) {
+          fileUri = tab.input.uri;
+          break;
+        }
+      }
+      if (fileUri) break;
+    }
+  }
+
+  if (!fileUri) {
+    fileUri = await pickMdzFile('Select .mdz file to compare with git base');
+    if (!fileUri) return undefined;
+  }
+
+  if (!fileUri.path.toLowerCase().endsWith('.mdz')) {
+    vscode.window.showWarningMessage('Select a .mdz file to compare with git base.');
+    return undefined;
+  }
+
+  const isOpenInTab = vscode.window.tabGroups.all.some(g =>
+    g.tabs.some(t =>
+      (t.input instanceof vscode.TabInputText || t.input instanceof vscode.TabInputCustom) &&
+      t.input.uri.toString() === fileUri!.toString()
+    )
+  );
+  if (isOpenInTab) {
+    const choice = await vscode.window.showWarningMessage(
+      'Save file before comparing with git base?',
+      'Save', 'Compare Anyway', 'Cancel'
+    );
+    if (choice === 'Cancel' || choice === undefined) return undefined;
+    if (choice === 'Save') {
+      const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fileUri!.toString());
+      if (doc) await doc.save();
+      else await vscode.commands.executeCommand('workbench.action.files.saveFiles', [fileUri]);
+    }
+  }
+
+  return {
+    fileUri,
+    baseUri: originalUriFromCommandArg(resource, fileUri),
+  };
 }
 
 export function activate(context: vscode.ExtensionContext): void {
   const version = context.extension.packageJSON.version;
-  console.log(`[MDZip] Activating extension version ${version}`);
+  mdzipOutputChannel = vscode.window.createOutputChannel('MDZip');
+  context.subscriptions.push(mdzipOutputChannel);
+  logInfo(`Activating extension version ${version}`);
 
   context.subscriptions.push(MdzEditorProvider.register(context));
 
   const bundledServerPath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'mdz-mcp-server.js').fsPath;
+  const codexBundledServerConfig = {
+    command: 'node',
+    args: [bundledServerPath],
+  };
   const bundledServerConfig: { type: 'stdio'; command: string; args: string[] } = {
     type: 'stdio',
     command: 'node',
@@ -75,7 +208,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   void maybeShowWelcomeWalkthrough(context);
-  void maybePromptClaudeCodeMcp(context, bundledServerConfig);
+  void maybePromptAiToolMcpSetup(context);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mdzip.copyMcpConfigSnippet', async () => {
@@ -257,23 +390,26 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('mdzip.newFile', async (resource?: vscode.Uri) => {
-      const targetUri = await resolveNewMdzTargetUri(resource);
-      if (!targetUri) {
-        return;
-      }
+    vscode.commands.registerCommand('mdzip.newFile', async (resource?: unknown) => {
+      await createMdzFromTemplate(context, resource);
+    })
+  );
 
-      // Write an empty .mdz archive with a starter index.md
-      const blob = await buildNewArchiveWithTitle(
-        '# New Document\n\nStart writing here.\n',
-        fileBaseNameFromPath(targetUri.path)
-      );
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      await vscode.workspace.fs.writeFile(targetUri, bytes);
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.newFromTemplate', async (resource?: unknown) => {
+      await createMdzFromTemplate(context, resource);
+    })
+  );
 
-      // Open freshly-created files in source edit mode for immediate typing.
-      MdzEditorProvider.markNextOpenInEdit(targetUri);
-      await vscode.commands.executeCommand('vscode.openWith', targetUri, 'mdzip.mdzEditor');
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.configureTemplateFolder', async () => {
+      await configureTemplateFolder();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.openTemplatesFolder', async () => {
+      await openTemplatesFolder();
     })
   );
 
@@ -313,7 +449,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const bytes = await buildNewArchiveBytesWithTitle(markdown, derivedTitle, buildAssets);
       await vscode.workspace.fs.writeFile(targetUri, bytes);
 
-      MdzEditorProvider.markNextOpenInEdit(targetUri);
+      MdzEditorProvider.markNextOpenInSplit(targetUri);
       await vscode.commands.executeCommand('vscode.openWith', targetUri, 'mdzip.mdzEditor');
     })
   );
@@ -375,12 +511,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mdzip.compareMarkdown', async (resource?: vscode.Uri) => {
-      console.log('[MDZip] compareMarkdown command invoked');
+      logInfo('compareMarkdown command invoked');
       try {
-        console.log('[MDZip] Showing compare dialog');
+        logInfo('Showing compare dialog');
         vscode.window.showInformationMessage('Starting MDZip markdown compare...');
 
-        console.log('[MDZip] Starting file selection');
+        logInfo('Starting file selection');
         let rightUri = resource;
         if (!rightUri) {
           const activeUri = vscode.window.activeTextEditor?.document.uri;
@@ -390,24 +526,24 @@ export function activate(context: vscode.ExtensionContext): void {
         }
 
         if (!rightUri) {
-          console.log('[MDZip] Showing right file picker');
+          logInfo('Showing right file picker');
           rightUri = await pickMdzFile('Select working .mdz file');
           if (!rightUri) {
-            console.log('[MDZip] Right file cancelled');
+            logInfo('Right file cancelled');
             return;
           }
         }
-        console.log('[MDZip] Right file selected:', rightUri.fsPath);
+        logInfo('Right file selected', rightUri.fsPath);
 
-        console.log('[MDZip] Showing left file picker');
+        logInfo('Showing left file picker');
         const leftUri = await pickMdzFile('Select base .mdz file to compare');
         if (!leftUri) {
-          console.log('[MDZip] Left file cancelled');
+          logInfo('Left file cancelled');
           return;
         }
-        console.log('[MDZip] Left file selected:', leftUri.fsPath);
+        logInfo('Left file selected', leftUri.fsPath);
 
-        console.log('[MDZip] Reading archives...');
+        logInfo('Reading archives');
         vscode.window.showInformationMessage('Reading archives...');
 
         // Read file, checking for unsaved changes
@@ -471,75 +607,162 @@ export function activate(context: vscode.ExtensionContext): void {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(`Compare failed: ${msg}`);
-        console.error('MDZip compare error:', err);
-        if (err instanceof Error) {
-          console.error('Stack:', err.stack);
-        }
+        logError('Compare failed', err);
       }
     })
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('mdzip.compareWithGitBase', async (resource?: vscode.Uri) => {
-      try {
-        // Resolve the file URI from context menu, active custom editor tab, or file picker
-        let fileUri = resource;
-        if (!fileUri) {
-          for (const group of vscode.window.tabGroups.all) {
-            for (const tab of group.tabs) {
-              if (tab.input instanceof vscode.TabInputCustom &&
-                  tab.input.uri.path.toLowerCase().endsWith('.mdz')) {
-                fileUri = tab.input.uri;
-                break;
-              }
-            }
-            if (fileUri) break;
-          }
+    vscode.commands.registerCommand('mdzip.enableCodexMcp', async () => {
+      const target = await vscode.window.showQuickPick(
+        [
+          {
+            label: 'User Config',
+            description: '~/.codex/config.toml',
+          },
+          {
+            label: 'Workspace Config',
+            description: '.codex/config.toml',
+          },
+        ],
+        {
+          title: 'Enable MDZip MCP Server for Codex',
+          placeHolder: 'Choose where to write Codex MCP configuration',
         }
-        if (!fileUri) {
-          fileUri = await pickMdzFile('Select .mdz file to compare with git base');
-          if (!fileUri) return;
-        }
+      );
 
-        // Prompt to save if file is open and possibly dirty
-        const isOpenInTab = vscode.window.tabGroups.all.some(g =>
-          g.tabs.some(t =>
-            (t.input instanceof vscode.TabInputText || t.input instanceof vscode.TabInputCustom) &&
-            t.input.uri.fsPath === fileUri!.fsPath
-          )
+      if (!target) {
+        return;
+      }
+
+      if (!(await canUseNodeCommand())) {
+        const choice = await vscode.window.showWarningMessage(
+          'Codex will need "node" on PATH to start the bundled MDZip MCP server.',
+          'Continue',
+          'Cancel'
         );
-        if (isOpenInTab) {
-          const choice = await vscode.window.showWarningMessage(
-            'Save file before comparing with git base?',
-            'Save', 'Compare Anyway', 'Cancel'
-          );
-          if (choice === 'Cancel' || choice === undefined) return;
-          if (choice === 'Save') {
-            const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === fileUri!.fsPath);
-            if (doc) await doc.save();
-            else await vscode.commands.executeCommand('workbench.action.files.saveFiles', [fileUri]);
-          }
+        if (choice !== 'Continue') {
+          return;
         }
+      }
 
-        // Fetch git HEAD bytes and store in cache
-        const gitBytes = await getGitBaseBytes(fileUri);
+      const isWorkspaceTarget = target.label === 'Workspace Config';
+      const configUri = isWorkspaceTarget ? getWorkspaceCodexConfigUri() : getUserCodexConfigUri();
+      if (!configUri) {
+        vscode.window.showWarningMessage('Open a workspace folder to enable workspace Codex MCP configuration.');
+        return;
+      }
+
+      let existingText = '';
+      try {
+        const existing = await vscode.workspace.fs.readFile(configUri);
+        existingText = new TextDecoder('utf-8').decode(existing);
+      } catch {
+        // Missing config is expected on first run.
+      }
+
+      const nextText = upsertCodexMcpServerConfig(existingText, BUNDLED_MCP_SERVER_KEY, codexBundledServerConfig);
+      await vscode.workspace.fs.createDirectory(parentUri(configUri));
+      await vscode.workspace.fs.writeFile(configUri, new TextEncoder().encode(nextText));
+
+      const document = await vscode.workspace.openTextDocument(configUri);
+      await vscode.window.showTextDocument(document);
+
+      const trustNote = isWorkspaceTarget
+        ? ' Codex will load this project config only when the workspace is trusted.'
+        : '';
+      vscode.window.showInformationMessage(
+        `Enabled MDZip MCP server for Codex. Restart Codex or open a new Codex session for the server to become available.${trustNote}`
+      );
+      await context.globalState.update('mdzip.aiToolMcpSetupPrompt.state.v1', 'enabled');
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.compareWithGitBase', async (resource?: unknown) => {
+      logInfo('compareWithGitBase command invoked');
+      try {
+        const target = await resolveGitCompareTarget(resource);
+        if (!target) {
+          logInfo('compareWithGitBase command cancelled before target resolution');
+          return;
+        }
+        logInfo('compareWithGitBase target resolved', target.fileUri.fsPath);
+
+        const gitBytes = await getGitBaseBytes(target.baseUri);
+        if (!gitBytes) {
+          throw new Error(`File has no git history: ${path.basename(target.fileUri.fsPath)}`);
+        }
+        logInfo('compareWithGitBase git base loaded', { bytes: gitBytes.length });
         const baseKey = Date.now().toString(36) + 'base';
         MdzMarkdownFsProvider.cache.set(baseKey, new Uint8Array(gitBytes));
 
         const workingKey = Date.now().toString(36) + 'work';
-        // working side: no cache entry → provider reads from disk
-
-        const baseName = path.basename(fileUri.fsPath);
-        const baseVirtualUri = vscode.Uri.parse(`mdzip-markdown:///${baseKey}/${fileUri.fsPath}`);
-        const workVirtualUri = vscode.Uri.parse(`mdzip-markdown:///${workingKey}/${fileUri.fsPath}`);
-        const title = `${baseName}: HEAD ↔ Working`;
+        const baseName = path.basename(target.fileUri.fsPath || target.fileUri.path);
+        const baseVirtualUri = vscode.Uri.parse(`mdzip-markdown:///${baseKey}/${target.baseUri.fsPath}`);
+        const workVirtualUri = vscode.Uri.parse(`mdzip-markdown:///${workingKey}/${target.fileUri.fsPath}`);
+        const title = `${baseName}: HEAD to Working (Markdown)`;
 
         await vscode.commands.executeCommand('vscode.diff', baseVirtualUri, workVirtualUri, title, {
           preview: true
         });
+        logInfo('compareWithGitBase diff opened', title);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(`Git compare failed: ${msg}`);
+        logError('Git compare failed', err);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.compareArchiveWithGitBase', async (resource?: unknown) => {
+      logInfo('compareArchiveWithGitBase command invoked');
+      try {
+        const target = await resolveGitCompareTarget(resource);
+        if (!target) {
+          logInfo('compareArchiveWithGitBase command cancelled before target resolution');
+          return;
+        }
+        logInfo('compareArchiveWithGitBase target resolved', target.fileUri.fsPath);
+
+        const [gitBytes, workingBytes] = await Promise.all([
+          getGitBaseBytes(target.baseUri),
+          vscode.workspace.fs.readFile(target.fileUri).then(
+            bytes => bytes,
+            () => undefined
+          ),
+        ]);
+
+        if (!gitBytes && !workingBytes) {
+          throw new Error(`No git base or working-copy bytes are available for ${path.basename(target.fileUri.fsPath)}`);
+        }
+        logInfo('compareArchiveWithGitBase archive bytes loaded', {
+          gitBytes: gitBytes?.length ?? 0,
+          workingBytes: workingBytes?.length ?? 0,
+        });
+
+        const baseName = path.basename(target.fileUri.fsPath || target.fileUri.path);
+        await MdzDiffPanel.open({
+          title: `${baseName}: Archive Contents`,
+          before: {
+            label: 'HEAD',
+            uri: target.baseUri,
+            bytes: gitBytes ? new Uint8Array(gitBytes) : undefined,
+            missingMessage: 'This file has no readable HEAD version. It may be new, untracked, or renamed from a path without history.',
+          },
+          after: {
+            label: 'Working Tree',
+            uri: target.fileUri,
+            bytes: workingBytes,
+            missingMessage: 'The working-copy file is not readable. It may have been deleted.',
+          },
+        });
+        logInfo('compareArchiveWithGitBase panel opened', baseName);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`Archive compare failed: ${msg}`);
+        logError('Archive compare failed', err);
       }
     })
   );
@@ -560,73 +783,105 @@ async function resolveSourceMarkdownUri(resource?: vscode.Uri): Promise<vscode.U
   return undefined;
 }
 
-async function resolveNewMdzTargetUri(resource?: vscode.Uri): Promise<vscode.Uri | undefined> {
-  if (resource) {
-    try {
-      const stat = await vscode.workspace.fs.stat(resource);
-      if (stat.type === vscode.FileType.Directory) {
-        const rawName = await vscode.window.showInputBox({
-          title: 'New MDZip Document',
-          prompt: 'Enter file name',
-          value: 'Untitled.mdz',
-          validateInput: (value) => {
-            const name = value.trim();
-            if (!name) {
-              return 'File name is required.';
-            }
-            if (name.includes('/') || name.includes('\\')) {
-              return 'Use a file name, not a path.';
-            }
-            return null;
-          },
-        });
-        if (!rawName) {
-          return undefined;
-        }
-
-        const fileName = rawName.toLowerCase().endsWith('.mdz') ? rawName : `${rawName}.mdz`;
-        return vscode.Uri.joinPath(resource, fileName);
-      }
-    } catch {
-      // Fall through to Save dialog when resource metadata is unavailable.
-    }
-  }
-
-  return vscode.window.showSaveDialog({
-    filters: { 'MDZip Document': ['mdz'] },
-    title: 'New MDZip Document',
-  });
-}
-
 export function deactivate(): void {
   // nothing to do
 }
 
-async function maybePromptClaudeCodeMcp(
-  context: vscode.ExtensionContext,
-  bundledServerConfig: { type: 'stdio'; command: string; args: string[] }
-): Promise<void> {
-  const key = 'mdzip.hasPromptedClaudeCodeMcp.v1';
-  if (context.globalState.get<boolean>(key)) {
+async function maybePromptAiToolMcpSetup(context: vscode.ExtensionContext): Promise<void> {
+  const key = 'mdzip.aiToolMcpSetupPrompt.state.v1';
+  const state = context.globalState.get<string>(key);
+  if (state === 'enabled' || state === 'dismissed') {
     return;
   }
 
-  await context.globalState.update(key, true);
-
-  const workspaceLabel = 'Add to Workspace';
-  const userLabel = 'Add to User Settings';
+  const enableLabel = 'Enable';
+  const notNowLabel = 'Not Now';
+  const dontAskLabel = "Don't Ask Again";
   const selection = await vscode.window.showInformationMessage(
-    'Add the MDZip MCP server to your Claude Code config so Claude can read .mdz files directly?',
-    workspaceLabel,
-    userLabel,
-    'Not Now'
+    'Enable the MDZip MCP server so AI tools can inspect .mdz files directly?',
+    enableLabel,
+    notNowLabel,
+    dontAskLabel
   );
 
-  if (selection === workspaceLabel) {
-    await vscode.commands.executeCommand('mdzip.enableWorkspaceMcp');
-  } else if (selection === userLabel) {
-    await vscode.commands.executeCommand('mdzip.enableUserMcp');
+  if (selection === dontAskLabel) {
+    await context.globalState.update(key, 'dismissed');
+    return;
   }
+
+  if (selection !== enableLabel) {
+    return;
+  }
+
+  const target = await vscode.window.showQuickPick(
+    [
+      {
+        label: 'Codex',
+        description: 'Write ~/.codex/config.toml or workspace .codex/config.toml',
+      },
+      {
+        label: 'Claude Code',
+        description: 'Claude Code setup is not available in this build',
+      },
+      {
+        label: 'VS Code / Copilot',
+        description: 'Use VS Code MCP server status or mcp.json setup',
+      },
+    ],
+    {
+      title: 'Enable MDZip MCP Server',
+      placeHolder: 'Choose an AI tool',
+    }
+  );
+
+  if (!target) {
+    return;
+  }
+
+  if (target.label === 'Codex') {
+    await vscode.commands.executeCommand('mdzip.enableCodexMcp');
+    return;
+  }
+
+  if (target.label === 'Claude Code') {
+    vscode.window.showInformationMessage('Claude Code MCP setup is not available in this build yet.');
+    return;
+  }
+
+  const openStatusLabel = 'Open MCP Status';
+  const workspaceLabel = 'Write Workspace mcp.json';
+  const userLabel = 'Write User MCP Config';
+  const vscodeSelection = await vscode.window.showQuickPick(
+    [
+      {
+        label: openStatusLabel,
+        description: 'Inspect the bundled VS Code MCP server',
+      },
+      {
+        label: workspaceLabel,
+        description: 'Create or update .vscode/mcp.json',
+      },
+      {
+        label: userLabel,
+        description: 'Open or update user MCP configuration',
+      },
+    ],
+    {
+      title: 'Enable MDZip MCP Server for VS Code / Copilot',
+      placeHolder: 'Choose a VS Code MCP setup action',
+    }
+  );
+
+  if (vscodeSelection?.label === openStatusLabel) {
+    await vscode.commands.executeCommand('mdzip.openMcpServerStatus');
+  } else if (vscodeSelection?.label === workspaceLabel) {
+    await vscode.commands.executeCommand('mdzip.enableWorkspaceMcp');
+  } else if (vscodeSelection?.label === userLabel) {
+    await vscode.commands.executeCommand('mdzip.enableUserMcp');
+  } else {
+    return;
+  }
+  await context.globalState.update(key, 'enabled');
 }
 
 async function maybeShowWelcomeWalkthrough(context: vscode.ExtensionContext): Promise<void> {
@@ -717,6 +972,81 @@ function upsertBundledMcpServer(
   ) {
     delete servers[LEGACY_BUNDLED_MCP_SERVER_KEY];
   }
+}
+
+function getUserCodexConfigUri(): vscode.Uri {
+  return vscode.Uri.file(path.join(os.homedir(), '.codex', 'config.toml'));
+}
+
+function getWorkspaceCodexConfigUri(): vscode.Uri | undefined {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    return undefined;
+  }
+  return vscode.Uri.joinPath(workspaceFolder.uri, '.codex', 'config.toml');
+}
+
+function parentUri(uri: vscode.Uri): vscode.Uri {
+  if (uri.scheme === 'file') {
+    return vscode.Uri.file(path.dirname(uri.fsPath));
+  }
+  return uri.with({ path: path.posix.dirname(uri.path) });
+}
+
+async function canUseNodeCommand(): Promise<boolean> {
+  return new Promise(resolve => {
+    execFile('node', ['--version'], { windowsHide: true }, error => {
+      resolve(!error);
+    });
+  });
+}
+
+function upsertCodexMcpServerConfig(
+  existingText: string,
+  serverName: string,
+  serverConfig: { command: string; args: readonly string[] }
+): string {
+  const withoutExistingServer = removeCodexMcpServerTables(existingText, serverName).replace(/\s*$/, '');
+  const nextBlock = [
+    `[mcp_servers.${serverName}]`,
+    `command = ${tomlString(serverConfig.command)}`,
+    `args = [${serverConfig.args.map(tomlString).join(', ')}]`,
+  ].join('\n');
+
+  if (!withoutExistingServer) {
+    return `${nextBlock}\n`;
+  }
+  return `${withoutExistingServer}\n\n${nextBlock}\n`;
+}
+
+function removeCodexMcpServerTables(existingText: string, serverName: string): string {
+  const lines = existingText.split(/\r?\n/);
+  const newline = existingText.includes('\r\n') ? '\r\n' : '\n';
+  const target = `mcp_servers.${serverName}`;
+  const keptLines: string[] = [];
+  let removing = false;
+
+  for (const line of lines) {
+    const tableName = tomlTableName(line);
+    if (tableName) {
+      removing = tableName === target || tableName.startsWith(`${target}.`);
+    }
+
+    if (!removing) {
+      keptLines.push(line);
+    }
+  }
+
+  return keptLines.join(newline);
+}
+
+function tomlTableName(line: string): string | undefined {
+  const match = line.match(/^\s*\[([^\[\]]+)\]\s*(?:#.*)?$/);
+  return match?.[1].trim();
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
 }
 
 function buildWorkspaceAgentInstructionsBlock(): string {

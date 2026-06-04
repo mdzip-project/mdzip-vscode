@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import {
   buildNewArchiveBytesWithTitle,
   buildNewArchiveWithTitle,
@@ -12,7 +13,7 @@ import {
   OpenedArchive,
   fileBaseNameFromPath,
   suggestedTitleFromMarkdown,
-} from '@mdzip/editor';
+} from 'mdzip-editor';
 
 /**
  * Represents an open .mdz document.
@@ -45,10 +46,15 @@ export class MdzDocument implements vscode.CustomDocument {
   /** Fired whenever the document changes (edit or external reload). */
   public readonly onDidChange = this._onDidChange.event;
 
+  private readonly _watcher: vscode.FileSystemWatcher | undefined;
+  private _reloadTimer: NodeJS.Timeout | undefined;
+  private _disposed = false;
+
   private constructor(uri: vscode.Uri, bytes: Uint8Array, sourceFormat: 'mdz' | 'markdown') {
     this.uri = uri;
     this._archiveBytes = bytes;
     this._sourceFormat = sourceFormat;
+    this._watcher = this._createExternalChangeWatcher(uri);
   }
 
   /** Factory — reads the file from disk and parses the archive. */
@@ -410,6 +416,31 @@ export class MdzDocument implements vscode.CustomDocument {
     this._onDidChange.fire({ reason: 'reload' });
   }
 
+  /** Reload from disk after an external file change when no local edits would be lost. */
+  public async reloadFromDiskIfClean(): Promise<boolean> {
+    if (this._disposed || this._isDirty) {
+      return false;
+    }
+
+    const bytes = await vscode.workspace.fs.readFile(this.uri);
+    if (this._sourceFormat === 'markdown') {
+      const markdown = bytes.byteLength === 0 ? '' : new TextDecoder('utf-8').decode(bytes);
+      const starter = await buildNewArchiveWithTitle(
+        markdown,
+        suggestedTitleFromMarkdown(markdown, fileBaseNameFromPath(this.uri.path))
+      );
+      const starterBytes = new Uint8Array(await starter.arrayBuffer());
+      await this._reload(starterBytes);
+      this._currentMarkdown = markdown;
+      this._onDidChange.fire({ reason: 'reload' });
+      return true;
+    }
+
+    await this._reload(bytes);
+    this._onDidChange.fire({ reason: 'reload' });
+    return true;
+  }
+
   /** Backup the document to the given destination. */
   public async backup(destination: vscode.Uri): Promise<vscode.CustomDocumentBackup> {
     await this.saveAs(destination);
@@ -430,7 +461,42 @@ export class MdzDocument implements vscode.CustomDocument {
   }
 
   public dispose(): void {
+    this._disposed = true;
+    if (this._reloadTimer) {
+      clearTimeout(this._reloadTimer);
+      this._reloadTimer = undefined;
+    }
+    this._watcher?.dispose();
     this._onDidChange.dispose();
+  }
+
+  private _createExternalChangeWatcher(uri: vscode.Uri): vscode.FileSystemWatcher | undefined {
+    if (uri.scheme !== 'file') {
+      return undefined;
+    }
+
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(vscode.Uri.file(path.dirname(uri.fsPath)), path.basename(uri.fsPath))
+    );
+    const scheduleReload = () => this._scheduleExternalReload();
+    watcher.onDidChange(scheduleReload);
+    watcher.onDidCreate(scheduleReload);
+    return watcher;
+  }
+
+  private _scheduleExternalReload(): void {
+    if (this._disposed || this._isDirty) {
+      return;
+    }
+
+    if (this._reloadTimer) {
+      clearTimeout(this._reloadTimer);
+    }
+
+    this._reloadTimer = setTimeout(() => {
+      this._reloadTimer = undefined;
+      void this.reloadFromDiskIfClean();
+    }, 100);
   }
 }
 
