@@ -14,7 +14,7 @@ import {
   buildNewArchiveBytesWithTitle,
   readCanonicalMarkdown,
   suggestedTitleFromMarkdown,
-} from 'mdzip-editor';
+} from '@mdzip/editor';
 
 const BUNDLED_MCP_SERVER_LABEL = 'MDZip MCP Server';
 const BUNDLED_MCP_SERVER_KEY = 'MDZip';

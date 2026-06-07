@@ -4,9 +4,10 @@ import {
   createArchiveInventory,
   diffArchiveInventories,
   readCanonicalMarkdown,
+  escapeHtml,
   type ArchiveInventoryDiff,
   type CanonicalMarkdownReadResult,
-} from 'mdzip-editor';
+} from '@mdzip/editor';
 
 export interface MdzDiffSideInput {
   readonly label: string;
@@ -540,11 +541,3 @@ function renderInventoryDiff(inventoryDiff: ArchiveInventoryDiff | undefined): s
 </section>`;
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}

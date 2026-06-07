@@ -2,7 +2,7 @@
   "name": "mdzip-vscode",
   "displayName": "MDZip (.mdz) Editor",
   "description": "Read and write MDZip (.mdz) files including packaged images. Single document mode.",
-  "version": "0.1.182",
+  "version": "0.1.184",
   "icon": "media/icons/mdzip-marketplace-icon.png",
   "publisher": "mdzip-project",
   "license": "Apache-2.0",
@@ -409,12 +409,12 @@
     "@types/node": "^20.19.39",
     "@types/vscode": "^1.116.0",
     "esbuild": "^0.28.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vsce": "^2.15.0"
   },
   "dependencies": {
+    "@mdzip/editor": "file:../mdzip-editor/packages/editor",
     "@modelcontextprotocol/sdk": "^1.17.4",
-    "marked": "^15.0.12",
-    "mdzip-core-js": "1.1.1",
-    "mdzip-editor": "^0.1.1"
+    "marked": "^15.0.12"
   }
 }

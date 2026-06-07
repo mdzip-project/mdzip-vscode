@@ -7,7 +7,9 @@ import {
   fileBaseNameFromPath,
   firstMarkdownHeading,
   suggestedTitleFromMarkdown,
-} from 'mdzip-editor';
+  MdzipWorkspaceService,
+  inferMdzipSourceFormat,
+} from '@mdzip/editor';
 
 /**
  * Custom editor provider for `.mdz` files.
@@ -204,37 +206,18 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           if (!isWorkspaceSnapshotMessage(message)) {
             return;
           }
-          await document.applyWorkspaceSnapshot({
-            archiveBytes: base64ToBytes(message.archiveBase64),
-            currentText: message.currentText,
-            currentPath: message.currentPath,
-            currentPathType: message.currentPathType,
-            dirty: message.dirty,
+          this._onDidChangeCustomDocument.fire({
+            document,
+            undo: () => {
+              /* no-op for now */
+            },
+            redo: () => {
+              /* no-op for now */
+            },
           });
-          if (message.dirty) {
-            this._onDidChangeCustomDocument.fire({
-              document,
-              undo: () => {
-                /* no-op for now */
-              },
-              redo: () => {
-                /* no-op for now */
-              },
-            });
-          }
           break;
 
         case 'workspaceSaved':
-          if (!isWorkspaceSnapshotMessage(message)) {
-            return;
-          }
-          await document.applyWorkspaceSnapshot({
-            archiveBytes: base64ToBytes(message.archiveBase64),
-            currentText: message.currentText,
-            currentPath: message.currentPath,
-            currentPathType: message.currentPathType,
-            dirty: true,
-          });
           await vscode.commands.executeCommand('workbench.action.files.save');
           break;
 
@@ -1010,12 +993,7 @@ type LayoutMode = EditorMode | 'split';
 // ---------------------------------------------------------------------------
 
 function getNonce(): string {
-  let text = '';
-  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
+  return require('crypto').randomBytes(16).toString('hex');
 }
 
 function sanitizePathSegment(segment: string): string {

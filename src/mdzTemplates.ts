@@ -7,7 +7,7 @@ import {
   suggestedTitleFromMarkdown,
   updateManifestTitleInArchive,
   updateMarkdownInArchive,
-} from 'mdzip-editor';
+} from '@mdzip/editor';
 import { MdzEditorProvider } from './mdzEditorProvider';
 
 type TemplateKind = 'builtin' | 'markdown' | 'mdz' | 'folder';

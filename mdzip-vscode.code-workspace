@@ -9,6 +9,7 @@
 		}
 	],
 	"settings": {
-		"powershell.cwd": "mdzip-vscode"
+		"powershell.cwd": "mdzip-vscode",
+		"mdzip.templates.path": "f:\\Code\\1 Projects\\mdzip-project\\mdzip-vscode\\templates"
 	}
 }

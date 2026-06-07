@@ -3,7 +3,7 @@ import {
   type MdzipSourceFormat,
   type MdzipWorkspaceLayout,
   type MdzipWorkspaceSnapshot,
-} from 'mdzip-editor';
+} from '@mdzip/editor';
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
