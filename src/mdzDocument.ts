@@ -28,17 +28,26 @@ export class MdzDocument implements vscode.CustomDocument {
   private readonly _watcher: vscode.FileSystemWatcher | undefined;
   private _reloadTimer: NodeJS.Timeout | undefined;
   private _disposed = false;
+  private _userDirty = false;
+  private _suppressNextReload = false;
+  private _latestWebviewBytes: Uint8Array | undefined;
+  private _convertedToMdz = false;
+  public readonly isNewDocument: boolean;
 
-  private constructor(uri: vscode.Uri, service: MdzipWorkspaceService, sourceFormat: 'mdz' | 'markdown') {
+  private constructor(uri: vscode.Uri, service: MdzipWorkspaceService, sourceFormat: 'mdz' | 'markdown', isNewDocument = false) {
     this.uri = uri;
     this._service = service;
     this._sourceFormat = sourceFormat;
+    this.isNewDocument = isNewDocument;
     this._watcher = this._createExternalChangeWatcher(uri);
     this._subscribeToServiceChanges();
   }
 
   private _subscribeToServiceChanges(): void {
     this._unsubscribe = this._service.subscribe((event) => {
+      // Fire change event for all service changes (for VS Code tracking)
+      // But only mark dirty for user edits from the webview (workspaceChanged)
+      // Internal events like markPersisted() should not affect dirty state
       this._onDidChange.fire({ reason: event.reason });
     });
   }
@@ -48,17 +57,12 @@ export class MdzDocument implements vscode.CustomDocument {
     const bytes = await vscode.workspace.fs.readFile(uri);
 
     if (uri.path.toLowerCase().endsWith('.md')) {
-      const markdown = bytes.byteLength === 0 ? '' : new TextDecoder('utf-8').decode(bytes);
-      const starter = await buildNewArchiveWithTitle(
-        markdown,
-        suggestedTitleFromMarkdown(markdown, fileBaseNameFromPath(uri.path))
-      );
-      const starterBytes = new Uint8Array(await starter.arrayBuffer());
-      const service = await MdzipWorkspaceService.open(starterBytes, {
+      // For plain .md files, pass them directly without wrapping in an archive
+      const service = await MdzipWorkspaceService.open(bytes, {
         sourceFormat: 'markdown',
         fileName: uri.path,
       });
-      const doc = new MdzDocument(uri, service, 'markdown');
+      const doc = new MdzDocument(uri, service, 'markdown', bytes.byteLength === 0);
       return doc;
     }
 
@@ -72,7 +76,7 @@ export class MdzDocument implements vscode.CustomDocument {
         sourceFormat: 'mdz',
         fileName: uri.path,
       });
-      const doc = new MdzDocument(uri, service, 'mdz');
+      const doc = new MdzDocument(uri, service, 'mdz', true);
       return doc;
     }
 
@@ -81,6 +85,7 @@ export class MdzDocument implements vscode.CustomDocument {
       sourceFormat,
       fileName: uri.path,
     });
+    service.markPersisted();
     const doc = new MdzDocument(uri, service, sourceFormat);
     return doc;
   }
@@ -133,9 +138,68 @@ export class MdzDocument implements vscode.CustomDocument {
     this._service.editText(newMarkdown);
   }
 
+  /** Return a JSON-serializable workspace snapshot with all asset data URIs pre-resolved. */
+  public async getSerializedWorkspace(): Promise<object> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const workspace = this._service.snapshot().workspace as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const assets = await Promise.all((workspace.assets as any[]).map(async (asset: any) => {
+      // Strip the JSZip-backed closure functions; keep all plain data fields (including
+      // undeclared ones like 'kind' that openedArchiveFromWorkspace depends on).
+      const { readBytes: _rb, readDataUri, ...plain } = asset;
+      return { ...plain, dataUri: readDataUri ? await readDataUri() : undefined };
+    }));
+
+    // For plain .md files, include relative disk images as synthetic assets so the webview
+    // can render them. The browser-side webview cannot load local files directly.
+    const diskAssets = this._sourceFormat === 'markdown' && this.uri.scheme === 'file'
+      ? await this._loadRelativeDiskImages(this._service.snapshot().currentText)
+      : [];
+
+    // Spread the full workspace so undeclared fields (validation, orphanedAssets, etc.)
+    // are preserved — openedArchiveFromWorkspace and getValidationStatus need them.
+    return { ...workspace, assets: [...assets, ...diskAssets] };
+  }
+
+  private async _loadRelativeDiskImages(markdown: string): Promise<object[]> {
+    const docDir = path.dirname(this.uri.fsPath);
+    const relPaths = new Set<string>();
+
+    for (const match of markdown.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
+      let target = match[1]?.trim() ?? '';
+      if (target.startsWith('<') && target.endsWith('>')) { target = target.slice(1, -1).trim(); }
+      target = target.split(/[?#]/)[0].trim();
+      if (!target) { continue; }
+      // Skip absolute URLs, protocol-relative, and absolute paths
+      if (/^[a-zA-Z][\w+.-]*:/.test(target) || target.startsWith('//') || target.startsWith('/') || /^[a-zA-Z]:[/\\]/.test(target)) { continue; }
+      relPaths.add(target);
+    }
+
+    const results: object[] = [];
+    await Promise.all([...relPaths].map(async (relPath) => {
+      const absPath = path.resolve(docDir, relPath.replace(/\//g, path.sep));
+      try {
+        const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(absPath));
+        const archivePath = relPath.replace(/\\/g, '/');
+        const ext = path.extname(archivePath).toLowerCase();
+        const mime = ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.webp': 'image/webp' } as Record<string, string>)[ext] ?? 'image/png';
+        const dataUri = `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`;
+        results.push({ path: archivePath, kind: 'image', dataUri });
+      } catch { /* file not found or unreadable — skip */ }
+    }));
+    return results;
+  }
+
   /** Return bytes in the format the shared browser editor expects to open. */
   public async exportForWorkspaceEditor(): Promise<Uint8Array> {
-    return this._service.saveToBytes();
+    // Use already-loaded bytes: every mutation (setManifestTitle, addAsset, removeAsset)
+    // calls reloadPreservingCurrentText() which keeps archiveBytes current.
+    // Calling saveToBytes() here is expensive (ZIP rebuild + JSZip re-parse) and unnecessary.
+    const snapshot = this._service.snapshot();
+    if (this._sourceFormat === 'markdown') {
+      return new TextEncoder().encode(snapshot.currentText);
+    }
+    return snapshot.archiveBytes;
   }
 
   /** Add or replace an image asset in the archive. */
@@ -165,12 +229,41 @@ export class MdzDocument implements vscode.CustomDocument {
     await this.saveAs(this.uri);
   }
 
+  /** The most recent bytes sent from the webview (updated on every workspaceChanged). */
+  public get latestWebviewBytes(): Uint8Array | undefined { return this._latestWebviewBytes; }
+
+  /** True when the browser has converted this markdown document to .mdz format. */
+  public get isConvertedToMdz(): boolean { return this._convertedToMdz; }
+
+  /** Apply bytes received from the webview after a user edit. */
+  public updateFromWebview(bytes: Uint8Array): void {
+    this._latestWebviewBytes = bytes;
+  }
+
+  /** Record that the browser has converted this markdown workspace to .mdz. */
+  public markConvertedToMdz(): void {
+    this._convertedToMdz = true;
+  }
+
+  /**
+   * Called after the host has committed the converted .mdz bytes to disk.
+   * Reverts the document to its on-disk markdown state so future saves don't redirect.
+   */
+  public async resetAfterMdzConversion(): Promise<void> {
+    this._convertedToMdz = false;
+    // Suppress the file-watcher reload triggered by the host writing the .md back to disk.
+    this._suppressNextReload = true;
+    await this.revert();
+  }
+
   /** Persist the document to a different URI (Save As). */
   public async saveAs(target: vscode.Uri): Promise<void> {
-    const bytes = await this._service.saveToBytes();
+    const bytes = this._latestWebviewBytes ?? await this._service.saveToBytes();
     await vscode.workspace.fs.writeFile(target, bytes);
     if (target.toString() === this.uri.toString()) {
       this._service.markPersisted();
+      this._userDirty = false;
+      this._suppressNextReload = true;
     }
   }
 
@@ -182,13 +275,20 @@ export class MdzDocument implements vscode.CustomDocument {
       sourceFormat,
       fileName: this.uri.path,
     });
+    this._latestWebviewBytes = undefined;
+    this._userDirty = false;
+    this._convertedToMdz = false;
     this._subscribeToServiceChanges();
     this._onDidChange.fire({ reason: 'reload' });
   }
 
   /** Reload from disk after an external file change when no local edits would be lost. */
   public async reloadFromDiskIfClean(): Promise<boolean> {
-    if (this._disposed || this._service.dirty) {
+    if (this._disposed || this._userDirty) {
+      return false;
+    }
+    if (this._suppressNextReload) {
+      this._suppressNextReload = false;
       return false;
     }
 
@@ -219,7 +319,11 @@ export class MdzDocument implements vscode.CustomDocument {
   }
 
   public get isDirty(): boolean {
-    return this._service.dirty;
+    return this._userDirty;
+  }
+
+  public markDirty(): void {
+    this._userDirty = true;
   }
 
   public dispose(): void {

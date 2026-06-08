@@ -1,5 +1,5 @@
 import { promises as fs } from 'fs';
-import { MdzArchiveCore, MDZ_IMAGE_MIME_TYPES } from 'mdzip-core-js';
+import { MdzArchiveCore, MDZ_IMAGE_MIME_TYPES } from '@mdzip/core-js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';

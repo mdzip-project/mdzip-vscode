@@ -2,7 +2,7 @@
   "name": "mdzip-vscode",
   "displayName": "MDZip (.mdz) Editor",
   "description": "Read and write MDZip (.mdz) files including packaged images. Single document mode.",
-  "version": "0.1.185",
+  "version": "0.1.240",
   "icon": "media/icons/mdzip-marketplace-icon.png",
   "publisher": "mdzip-project",
   "license": "Apache-2.0",
@@ -171,6 +171,11 @@
         "command": "mdzip.enableWorkspaceAgentInstructions",
         "title": "MDZip: Enable Workspace Agent Instructions",
         "category": "MDZip"
+      },
+      {
+        "command": "mdzip.extractToFolder",
+        "title": "MDZip: Extract to Folder",
+        "category": "MDZip"
       }
     ],
     "configuration": {
@@ -243,6 +248,9 @@
         },
         {
           "command": "mdzip.enableWorkspaceAgentInstructions"
+        },
+        {
+          "command": "mdzip.extractToFolder"
         }
       ],
       "explorer/context": [
@@ -270,6 +278,11 @@
           "command": "mdzip.compareArchiveWithGitBase",
           "when": "resourceExtname == .mdz",
           "group": "navigation@14"
+        },
+        {
+          "command": "mdzip.extractToFolder",
+          "when": "resourceExtname == .mdz",
+          "group": "navigation@15"
         }
       ],
       "editor/title": [
@@ -294,6 +307,10 @@
         },
         {
           "command": "mdzip.compareArchiveWithGitBase",
+          "when": "resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.extractToFolder",
           "when": "resourceExtname == .mdz"
         }
       ],
@@ -395,26 +412,35 @@
   "scripts": {
     "vscode:prepublish": "npm run bundle",
     "bundle": "npm run bundle:extension && npm run bundle:webview && npm run bundle:mcp",
-    "bundle:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "bundle:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --alias:jsdom=./src/jsdomStub.js --format=cjs --platform=node --minify",
     "bundle:webview": "esbuild src/webviewEditor.ts --bundle --outfile=media/editor.bundle.js --format=iife --platform=browser --minify",
     "bundle:mcp": "esbuild src/mdzMcpServer.ts --bundle --outfile=dist/mdz-mcp-server.js --format=cjs --platform=node --minify",
     "test:editor": "npm --prefix ../mdzip-editor/packages/editor test",
     "test:mcp-smoke": "npm run bundle:mcp && node tests/mcp-smoke.cjs",
+    "bundle:test-document": "esbuild src/mdzDocument.ts --bundle --outfile=dist/test/mdzDocument.cjs --alias:vscode=./tests/vscode-mock.cjs --alias:jsdom=./src/jsdomStub.js --format=cjs --platform=node",
+    "test:document": "npm run bundle:test-document && node --test tests/mdzDocument.test.cjs",
     "compile": "tsc -p ./",
-    "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
+    "compile:integration": "tsc -p tsconfig.integration.json",
+    "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --alias:jsdom=./src/jsdomStub.js --format=cjs --platform=node --watch",
     "lint": "eslint src --ext ts",
-    "test": "npm run test:editor && npm run test:mcp-smoke"
+    "test": "npm run test:editor && npm run test:mcp-smoke && npm run test:document",
+    "test:integration": "npm run bundle && npm run compile:integration && node dist/integration/runTests.js"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.39",
     "@types/vscode": "^1.116.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.28.0",
     "typescript": "^5.9.3",
     "vsce": "^2.15.0"
   },
   "dependencies": {
-    "@mdzip/editor": "file:../mdzip-editor/packages/editor",
+    "@mdzip/core-js": "^1.2.6",
+    "@mdzip/editor": "^1.2.6",
     "@modelcontextprotocol/sdk": "^1.17.4",
+    "jsdom": "^29.1.1",
     "marked": "^15.0.12"
   }
 }

@@ -1,5 +1,6 @@
 import {
   MdzipWorkspaceView,
+  type MdzipColorScheme,
   type MdzipSourceFormat,
   type MdzipWorkspaceLayout,
   type MdzipWorkspaceSnapshot,
@@ -19,6 +20,14 @@ interface OpenWorkspaceMessage {
   layout?: MdzipWorkspaceLayout;
 }
 
+interface OpenWorkspaceDirectMessage {
+  type: 'openWorkspaceDirect';
+  workspace: string; // JSON-serialized workspace; assets have a pre-resolved dataUri field
+  sourceFormat: MdzipSourceFormat;
+  fileName: string;
+  layout?: MdzipWorkspaceLayout;
+}
+
 const vscode = acquireVsCodeApi();
 const root = document.getElementById('mdzip-editor-root');
 
@@ -27,39 +36,108 @@ if (!root) {
 }
 const rootElement = root;
 
-document.documentElement.style.height = '100%';
-document.body.style.height = '100%';
-document.body.style.margin = '0';
-rootElement.style.height = '100%';
-
 let currentLayout: MdzipWorkspaceLayout = 'preview';
 let currentSourceFormat: MdzipSourceFormat = 'mdz';
-let editor = createEditor(currentLayout, currentSourceFormat);
+let editor: MdzipWorkspaceView | null = null;
 let hasOpenedWorkspace = false;
 
-window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage>) => {
+// Maps relative asset paths to data URIs for disk-sourced images (plain .md files).
+// Populated on each openWorkspaceDirect; the single error listener reads it at fire time.
+const diskImageMap = new Map<string, string>();
+let diskImageListenerInstalled = false;
+
+function updateDiskImageMap(assets: unknown[]): void {
+  diskImageMap.clear();
+  for (const asset of assets) {
+    if (!asset || typeof asset !== 'object') { continue; }
+    const { path: p, dataUri: d } = asset as Record<string, unknown>;
+    if (typeof p === 'string' && typeof d === 'string' && d.startsWith('data:')) {
+      diskImageMap.set(p.replace(/\\/g, '/'), d);
+    }
+  }
+
+  if (diskImageMap.size > 0 && !diskImageListenerInstalled) {
+    diskImageListenerInstalled = true;
+    // Capture-phase listener: fires before the element's own handlers, reliably
+    // catches images blocked by the webview origin or CSP.
+    document.addEventListener('error', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLImageElement)) { return; }
+      const src = target.getAttribute('src') ?? '';
+      if (src.startsWith('data:')) { return; } // already a data URI — don't loop
+      for (const [assetPath, dataUri] of diskImageMap) {
+        if (src === assetPath || src.endsWith('/' + assetPath)) {
+          target.src = dataUri;
+          return;
+        }
+      }
+    }, true);
+  }
+}
+
+const loadingEl = document.getElementById('mdzip-loading');
+
+window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | OpenWorkspaceDirectMessage>) => {
   const message = event.data;
-  if (message?.type !== 'openWorkspace') {
+  if (message?.type !== 'openWorkspace' && message?.type !== 'openWorkspaceDirect') {
     return;
   }
 
   hasOpenedWorkspace = true;
   const layout = message.layout ?? 'preview';
-  if (layout !== currentLayout || message.sourceFormat !== currentSourceFormat) {
+  const isFirst = !editor;
+
+  if (!editor) {
+    currentLayout = layout;
+    currentSourceFormat = message.sourceFormat;
+    editor = createEditor(currentLayout, currentSourceFormat, detectColorScheme());
+  } else if (layout !== currentLayout || message.sourceFormat !== currentSourceFormat) {
     editor.destroy();
     rootElement.replaceChildren();
     currentLayout = layout;
     currentSourceFormat = message.sourceFormat;
-    editor = createEditor(currentLayout, currentSourceFormat);
+    editor = createEditor(currentLayout, currentSourceFormat, detectColorScheme());
   }
 
-  void editor.open(base64ToBytes(message.bytesBase64), {
+  if (message.type === 'openWorkspaceDirect') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rawWorkspace = JSON.parse(message.workspace) as any;
+    // Reattach asset reader functions stripped by JSON serialization.
+    // readDataUri is used for preview rendering; readBytes is used by MdzPackagerCore when rebuilding the ZIP.
+    if (Array.isArray(rawWorkspace.assets)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rawWorkspace.assets = rawWorkspace.assets.map((asset: any) => ({
+        ...asset,
+        readDataUri: asset.dataUri != null
+          ? () => Promise.resolve(asset.dataUri as string)
+          : undefined,
+        readBytes: asset.dataUri != null
+          ? async () => base64ToBytes((asset.dataUri as string).split(',')[1] ?? '')
+          : undefined,
+      }));
+    }
+    updateDiskImageMap(Array.isArray(rawWorkspace.assets) ? rawWorkspace.assets : []);
+    const openPromise = editor.openWorkspace(rawWorkspace, {
+      sourceFormat: message.sourceFormat,
+      fileName: message.fileName,
+    });
+    if (isFirst) {
+      void openPromise.finally(() => { loadingEl?.remove(); });
+    }
+    return;
+  }
+
+  const openPromise = editor.open(base64ToBytes(message.bytesBase64), {
     sourceFormat: message.sourceFormat,
     fileName: message.fileName,
   });
+  if (isFirst) {
+    void openPromise.finally(() => { loadingEl?.remove(); });
+  }
 });
 
 postReadyUntilOpened();
+
 
 function postSnapshot(
   type: 'workspaceChanged' | 'workspaceSaved',
@@ -72,13 +150,26 @@ function postSnapshot(
     currentText: snapshot.currentText,
     currentPath: snapshot.currentPath,
     currentPathType: snapshot.currentPathType,
+    sourceFormat: snapshot.sourceFormat,
     dirty: snapshot.dirty,
   });
 }
 
+function detectColorScheme(): MdzipColorScheme {
+  const themeKind = document.body.getAttribute('data-vscode-theme-kind');
+  if (themeKind) {
+    return themeKind === 'vscode-light' || themeKind === 'vscode-high-contrast-light' ? 'light' : 'dark';
+  }
+  if (document.body.classList.contains('vscode-light') || document.body.classList.contains('vscode-high-contrast-light')) {
+    return 'light';
+  }
+  return 'dark';
+}
+
 function createEditor(
   initialLayout: MdzipWorkspaceLayout,
-  sourceFormat: MdzipSourceFormat
+  sourceFormat: MdzipSourceFormat,
+  initialColorScheme: MdzipColorScheme
 ): MdzipWorkspaceView {
   const isMdz = sourceFormat === 'mdz';
   return new MdzipWorkspaceView(rootElement, {
@@ -90,6 +181,7 @@ function createEditor(
     },
     navigationButtonActive: false,
     initialLayout,
+    initialColorScheme,
     onChanged: (bytes, snapshot) => {
       postSnapshot('workspaceChanged', bytes, snapshot);
     },

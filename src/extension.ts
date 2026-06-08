@@ -14,6 +14,8 @@ import {
   buildNewArchiveBytesWithTitle,
   readCanonicalMarkdown,
   suggestedTitleFromMarkdown,
+  isImagePath,
+  MdzipWorkspaceService,
 } from '@mdzip/editor';
 
 const BUNDLED_MCP_SERVER_LABEL = 'MDZip MCP Server';
@@ -172,7 +174,19 @@ async function resolveGitCompareTarget(
   };
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+/** API exported by activate(). Consumed by integration tests via vscode.extensions.getExtension(...).exports. */
+export interface MdzipTestApi {
+  /** Returns true once the document for this URI has been opened by the custom editor provider. */
+  hasDocument(uri: vscode.Uri): boolean;
+  /**
+   * Simulate what the workspaceChanged message handler does: store webview bytes,
+   * mark dirty, and fire the dirty event. Bypasses the async webview message pipeline
+   * so integration tests can verify the full VS Code save flow synchronously.
+   */
+  simulateWebviewChange(uri: vscode.Uri, bytes: Uint8Array): void;
+}
+
+export function activate(context: vscode.ExtensionContext): MdzipTestApi {
   const version = context.extension.packageJSON.version;
   mdzipOutputChannel = vscode.window.createOutputChannel('MDZip');
   context.subscriptions.push(mdzipOutputChannel);
@@ -767,6 +781,87 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.extractToFolder', async (resource?: unknown) => {
+      let fileUri = resourceUriFromCommandArg(resource);
+
+      if (!fileUri) {
+        for (const group of vscode.window.tabGroups.all) {
+          for (const tab of group.tabs) {
+            if (tab.isActive && tab.input instanceof vscode.TabInputCustom &&
+                tab.input.uri.path.toLowerCase().endsWith('.mdz')) {
+              fileUri = tab.input.uri;
+              break;
+            }
+          }
+          if (fileUri) { break; }
+        }
+      }
+
+      if (!fileUri) {
+        fileUri = await pickMdzFile('Select .mdz file to extract');
+        if (!fileUri) { return; }
+      }
+
+      if (!fileUri.path.toLowerCase().endsWith('.mdz')) {
+        vscode.window.showWarningMessage('Select a .mdz file to extract.');
+        return;
+      }
+
+      const baseName = path.posix.basename(fileUri.path, '.mdz');
+      const dirPath = path.posix.dirname(fileUri.path);
+      const folderUri = fileUri.with({ path: `${dirPath}/${baseName}_tmp` });
+
+      try {
+        await vscode.workspace.fs.stat(folderUri);
+        // Folder exists — ask before overwriting.
+        const overwriteLabel = 'Extract Anyway';
+        const selection = await vscode.window.showWarningMessage(
+          `Folder "${baseName}_tmp" already exists. Extract and overwrite existing files?`,
+          { modal: true },
+          overwriteLabel
+        );
+        if (selection !== overwriteLabel) { return; }
+      } catch {
+        // Folder does not exist — proceed.
+      }
+
+      const mdzBytes = await vscode.workspace.fs.readFile(fileUri);
+      const service = await MdzipWorkspaceService.open(mdzBytes, {
+        sourceFormat: 'mdz',
+        fileName: fileUri.path,
+      });
+
+      const { paths } = service.content;
+      await vscode.workspace.fs.createDirectory(folderUri);
+
+      let extracted = 0;
+      for (const entry of paths) {
+        const entryBytes = await service.readPathBytes(entry.path);
+        if (!entryBytes) { continue; }
+
+        const segments = entry.path.replace(/\\/g, '/').replace(/^\/+/, '').split('/').filter(Boolean);
+        if (segments.length === 0) { continue; }
+        if (segments.length > 1) {
+          await vscode.workspace.fs.createDirectory(
+            vscode.Uri.joinPath(folderUri, ...segments.slice(0, -1))
+          );
+        }
+        await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folderUri, ...segments), entryBytes);
+        extracted++;
+      }
+
+      await vscode.commands.executeCommand('revealInExplorer', folderUri);
+      vscode.window.showInformationMessage(
+        `Extracted ${extracted} file${extracted === 1 ? '' : 's'} to ${baseName}_tmp/`
+      );
+    })
+  );
+
+  return {
+    hasDocument(uri) { return MdzEditorProvider.hasDocumentForUri(uri); },
+    simulateWebviewChange(uri, bytes) { MdzEditorProvider.simulateWebviewChange(uri, bytes); },
+  };
 }
 
 async function resolveSourceMarkdownUri(resource?: vscode.Uri): Promise<vscode.Uri | undefined> {
@@ -1126,6 +1221,10 @@ async function collectRelativeMarkdownImageAssets(
 
   for (const imageTarget of extractMarkdownImageTargets(markdown)) {
     if (!isRelativeImageTarget(imageTarget)) {
+      continue;
+    }
+
+    if (!isImagePath(imageTarget)) {
       continue;
     }
 

@@ -24,6 +24,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
   private static readonly _nextOpenLayouts = new Map<string, LayoutMode[]>();
   private static _instance: MdzEditorProvider | undefined;
   private readonly _panelsByDocument = new Map<string, Set<vscode.WebviewPanel>>();
+  private readonly _documentsByUri = new Map<string, MdzDocument>();
   private readonly _modeByWebview = new WeakMap<vscode.Webview, EditorMode>();
   private readonly _isMarkdownEditorByWebview = new WeakMap<vscode.Webview, boolean>();
   private readonly _splitLayoutUris = new Set<string>();
@@ -151,7 +152,38 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     _token: vscode.CancellationToken
   ): Promise<MdzDocument> {
     const doc = await MdzDocument.create(uri);
+    this._documentsByUri.set(uri.toString(), doc);
     return doc;
+  }
+
+  // ── Test API surface ──────────────────────────────────────────────────────
+
+  /** Whether a document is currently open for this URI. Used by tests. */
+  public static hasDocumentForUri(uri: vscode.Uri): boolean {
+    return MdzEditorProvider._instance?._documentsByUri.has(uri.toString()) ?? false;
+  }
+
+  /**
+   * Simulate what the workspaceChanged message handler does: store webview bytes,
+   * mark dirty, and fire the custom document change event. Used by integration tests
+   * to bypass the async webview message pipeline.
+   */
+  public static simulateWebviewChange(uri: vscode.Uri, bytes: Uint8Array): void {
+    const instance = MdzEditorProvider._instance;
+    if (!instance) {
+      return;
+    }
+    const doc = instance._documentsByUri.get(uri.toString());
+    if (!doc) {
+      return;
+    }
+    doc.updateFromWebview(bytes);
+    doc.markDirty();
+    instance._onDidChangeCustomDocument.fire({
+      document: doc,
+      undo: () => { /* no-op */ },
+      redo: () => { /* no-op */ },
+    });
   }
 
   public async resolveCustomEditor(
@@ -168,7 +200,8 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     }
 
     const initialMode: EditorMode =
-      MdzEditorProvider.consumeInitialMode(document.uri) ?? this._suggestInitialMode(document.uri);
+      MdzEditorProvider.consumeInitialMode(document.uri) ??
+      (document.isNewDocument ? 'edit' : this._suggestInitialMode(document.uri));
     const initialLayout = MdzEditorProvider.consumeInitialLayout(document.uri);
     if (initialLayout === 'split') {
       this._splitLayoutUris.add(document.uri.toString());
@@ -184,6 +217,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     };
 
     // Handle messages from the webview
+    let convertSaveTimer: ReturnType<typeof setTimeout> | null = null;
     webviewPanel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
       switch (message.type) {
         case 'edit':
@@ -206,15 +240,31 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           if (!isWorkspaceSnapshotMessage(message)) {
             return;
           }
-          this._onDidChangeCustomDocument.fire({
-            document,
-            undo: () => {
-              /* no-op for now */
-            },
-            redo: () => {
-              /* no-op for now */
-            },
-          });
+          document.updateFromWebview(base64ToBytes(message.archiveBase64));
+          if (message.dirty) {
+            document.markDirty();
+            this._onDidChangeCustomDocument.fire({
+              document,
+              undo: () => {
+                /* no-op for now */
+              },
+              redo: () => {
+                /* no-op for now */
+              },
+            });
+          }
+          // The library converted the workspace to .mdz. Auto-save after a short
+          // debounce so both onChanged events (convertToMdz + insertImageFile)
+          // settle before writeFile runs. By save time _latestWebviewBytes has
+          // the final bytes including the pasted image.
+          if (message.sourceFormat === 'mdz' && document.sourceFormat === 'markdown') {
+            document.markConvertedToMdz();
+            if (convertSaveTimer) { clearTimeout(convertSaveTimer); }
+            convertSaveTimer = setTimeout(() => {
+              convertSaveTimer = null;
+              void vscode.commands.executeCommand('workbench.action.files.save');
+            }, 300);
+          }
           break;
 
         case 'workspaceSaved':
@@ -399,12 +449,20 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     });
 
     webviewPanel.webview.html = this._buildWebviewHtml(webviewPanel.webview, document);
+    // Send content asynchronously so webview renders immediately
+    this._sendWorkspaceEditorContent(webviewPanel.webview, document).catch(error => {
+      console.error('[MDZip] Error sending workspace content:', error);
+    });
   }
 
   public async saveCustomDocument(
     document: MdzDocument,
     _cancellation: vscode.CancellationToken
   ): Promise<void> {
+    if (document.sourceFormat === 'markdown' && document.isConvertedToMdz) {
+      await this._handleMarkdownConvertedToMdz(document);
+      return;
+    }
     await document.save();
   }
 
@@ -476,19 +534,33 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     } satisfies LoadMessage);
   }
 
-  /** Send document bytes to the shared browser editor runtime. */
+  /** Send document content to the shared browser editor runtime. */
   private async _sendWorkspaceEditorContent(
     webview: vscode.Webview,
     document: MdzDocument
   ): Promise<void> {
-    const bytes = await document.exportForWorkspaceEditor();
-    await webview.postMessage({
-      type: 'openWorkspace',
-      bytesBase64: bytesToBase64(bytes),
-      sourceFormat: document.sourceFormat,
-      fileName: path.posix.basename(document.uri.path),
-      layout: this._layoutModeForUri(document.uri, webview),
-    } satisfies OpenWorkspaceMessage);
+    try {
+      const fileName = path.posix.basename(document.uri.path);
+      const layout = this._layoutModeForUri(document.uri, webview);
+
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout serializing workspace')), 10000)
+      );
+      const workspace = await Promise.race([
+        document.getSerializedWorkspace(),
+        timeoutPromise,
+      ]);
+
+      await webview.postMessage({
+        type: 'openWorkspaceDirect',
+        workspace: JSON.stringify(workspace),
+        sourceFormat: document.sourceFormat,
+        fileName,
+        layout,
+      } satisfies OpenWorkspaceDirectMessage);
+    } catch (error) {
+      console.error('[MDZip] Failed to send workspace content:', error);
+    }
   }
 
   /** Build the HTML for the webview panel. */
@@ -508,8 +580,27 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
                  script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MDZip Editor</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { position: relative; }
+    #mdzip-loading {
+      position: absolute;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--vscode-editor-background, #1e1e1e);
+      color: var(--vscode-descriptionForeground, rgba(204, 204, 204, 0.6));
+      font-size: 13px;
+      font-family: var(--vscode-font-family, sans-serif);
+      pointer-events: none;
+    }
+    #mdzip-editor-root { height: 100%; }
+  </style>
 </head>
 <body>
+  <div id="mdzip-loading">Loading…</div>
   <main id="mdzip-editor-root"></main>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -581,6 +672,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     set.delete(panel);
     if (set.size === 0) {
       this._panelsByDocument.delete(key);
+      this._documentsByUri.delete(key);
     }
   }
 
@@ -805,6 +897,47 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     await this._broadcastLayoutState(uri);
   }
 
+  private async _handleMarkdownConvertedToMdz(document: MdzDocument): Promise<void> {
+    const mdzBytes = document.latestWebviewBytes;
+    if (!mdzBytes) {
+      await document.save();
+      return;
+    }
+
+    const targetUri = this._markdownConversionTargetUri(document.uri);
+
+    if (await this._uriExists(targetUri)) {
+      const overwriteLabel = 'Overwrite .mdz';
+      const selection = await vscode.window.showWarningMessage(
+        `${path.posix.basename(targetUri.path)} already exists. Overwrite it with the converted archive?`,
+        { modal: true },
+        overwriteLabel
+      );
+      if (selection !== overwriteLabel) {
+        // User declined — revert the .md to its clean original state.
+        await document.revert();
+        return;
+      }
+    }
+
+    // Write the original markdown text back to the .md file.
+    // saveCustomDocument returning successfully clears VS Code's dirty indicator;
+    // writing the original content ensures the on-disk file is consistent.
+    const mdBytes = new TextEncoder().encode(document.currentMarkdown);
+    await vscode.workspace.fs.writeFile(document.uri, mdBytes);
+
+    // Write the converted .mdz archive to its target path.
+    await vscode.workspace.fs.writeFile(targetUri, mdzBytes);
+
+    // Reset the in-memory document state back to clean markdown.
+    // resetAfterMdzConversion suppresses the file-watcher reload and calls revert(),
+    // which fires onDidChange(reload) so the .md webview reloads to original markdown.
+    await document.resetAfterMdzConversion();
+
+    MdzEditorProvider.markNextOpenInSplit(targetUri);
+    await vscode.commands.executeCommand('vscode.openWith', targetUri, MdzEditorProvider.VIEW_TYPE);
+  }
+
   private async _promptToConvertMarkdownForEmbeddedImage(
     document: MdzDocument,
     message: { archivePath: string; base64Data: string }
@@ -932,6 +1065,7 @@ interface WebviewMessage {
   currentText?: string;
   currentPath?: string;
   currentPathType?: 'markdown' | 'text' | 'image' | 'binary';
+  sourceFormat?: 'mdz' | 'markdown';
   dirty?: boolean;
   message?: string;
   title?: string;
@@ -965,6 +1099,14 @@ interface LoadMessage {
 interface OpenWorkspaceMessage {
   type: 'openWorkspace';
   bytesBase64: string;
+  sourceFormat: 'mdz' | 'markdown';
+  fileName: string;
+  layout: LayoutMode;
+}
+
+interface OpenWorkspaceDirectMessage {
+  type: 'openWorkspaceDirect';
+  workspace: string; // JSON-serialized workspace with pre-resolved asset dataUri fields
   sourceFormat: 'mdz' | 'markdown';
   fileName: string;
   layout: LayoutMode;
@@ -1013,6 +1155,7 @@ function isWorkspaceSnapshotMessage(message: WebviewMessage): message is Webview
   currentText: string;
   currentPath: string;
   currentPathType: 'markdown' | 'text' | 'image' | 'binary';
+  sourceFormat: 'mdz' | 'markdown';
   dirty: boolean;
 } {
   return typeof message.archiveBase64 === 'string'
@@ -1022,5 +1165,6 @@ function isWorkspaceSnapshotMessage(message: WebviewMessage): message is Webview
       || message.currentPathType === 'text'
       || message.currentPathType === 'image'
       || message.currentPathType === 'binary')
+    && (message.sourceFormat === 'mdz' || message.sourceFormat === 'markdown')
     && typeof message.dirty === 'boolean';
 }
