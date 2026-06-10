@@ -4,6 +4,49 @@ Improvement requests raised during VS Code extension integration. All items here
 
 ---
 
+## 0. CRITICAL: `buildWorkspace` wrote empty files for lazy documents (1.2.7) — data loss
+
+**Fixed in `@mdzip/core-js` 1.2.8** (shipped via `@mdzip/editor` 1.2.8).
+
+`buildWorkspace` read `document.text` directly and never called `readText()`,
+so with 1.2.7's always-on lazy documents, any rebuild-triggering operation
+(`addAsset`/`pasteImage`, `removeAsset`, `setTitle`, `convertToMdz`) wrote
+empty content for every document the user had not opened. Verified with a
+two-document repro: after `addAsset`, the unopened document was empty in the
+rebuilt archive.
+
+The 1.2.8 fix resolves `text || await readText()` per document, and documents
+now carry a serialization-surviving `isLazy: true` flag. If a lazy document
+arrives with no `readText` (e.g. the closure was dropped by `postMessage`),
+`buildWorkspace` and `readWorkspacePathBytes` throw
+`ERR_LAZY_TEXT_UNAVAILABLE` instead of silently writing/showing empty content.
+Verified against the 1.2.8 tarballs: content survives rebuilds, dropped
+closures throw, books.mdz (749 docs) opens in ~600ms with 748 lazy documents,
+and a single on-demand `readText` takes ~25ms.
+
+---
+
+## 2. JSDoc on key `.d.ts` declarations
+
+**Shipped in `@mdzip/editor` 1.2.8 / `@mdzip/core-js` 1.2.8.**
+
+`open` vs `openWorkspace` (including the lazy-document serialization warning),
+`pasteImage` (null return for markdown source + rebuild cost note), and
+`snapshot().workspace` runtime-shape caveats are now documented in the shipped
+`.d.ts` files. `isLazy` is declared on the document type with guidance to
+clear it alongside `readText` when materializing.
+
+---
+
+## 3. Lazy document text failed silently after serialization (1.2.7)
+
+**Fixed in 1.2.8** via the `isLazy` flag + `ERR_LAZY_TEXT_UNAVAILABLE` errors
+described in item 0. The host-side pattern (strip closures, let `isLazy`
+survive, rehydrate `readText` as a round-trip on the receiving side) is
+implemented in mdzip-vscode 0.1.244.
+
+---
+
 ## 1. Paste behaviour fixes
 
 ### 1a. Image paste in a markdown source file does not trigger the conversion dialog

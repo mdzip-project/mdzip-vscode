@@ -150,6 +150,17 @@ export class MdzDocument implements vscode.CustomDocument {
       return { ...plain, dataUri: readDataUri ? await readDataUri() : undefined };
     }));
 
+    // Since 1.2.7 non-entry documents are lazy (text: '' + readText closure + isLazy
+    // flag). The closure does not survive postMessage, and eagerly resolving every
+    // text here can mean hundreds of MB for large archives (books.mdz: 749 docs /
+    // 324MB). Strip the closure; the isLazy flag survives serialization and tells
+    // the webview to rehydrate readText as a host round-trip.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const documents = (workspace.documents as any[]).map((doc: any) => {
+      const { readText: _rt, ...plain } = doc;
+      return plain;
+    });
+
     // For plain .md files, include relative disk images as synthetic assets so the webview
     // can render them. The browser-side webview cannot load local files directly.
     const diskAssets = this._sourceFormat === 'markdown' && this.uri.scheme === 'file'
@@ -158,7 +169,7 @@ export class MdzDocument implements vscode.CustomDocument {
 
     // Spread the full workspace so undeclared fields (validation, orphanedAssets, etc.)
     // are preserved — openedArchiveFromWorkspace and getValidationStatus need them.
-    return { ...workspace, assets: [...assets, ...diskAssets] };
+    return { ...workspace, documents, assets: [...assets, ...diskAssets] };
   }
 
   private async _loadRelativeDiskImages(markdown: string): Promise<object[]> {

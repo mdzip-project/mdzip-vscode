@@ -423,6 +423,27 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           await this._openSideBySideForUri(document.uri);
           break;
 
+        case 'readDocumentText': {
+          // On-demand text for a lazy document (large archives keep document
+          // text on the host side; see getSerializedWorkspace).
+          if (typeof message.requestId !== 'number' || typeof message.path !== 'string') {
+            return;
+          }
+          let text = '';
+          try {
+            const bytes = await document.readPathBytes(message.path);
+            text = bytes ? new TextDecoder('utf-8').decode(bytes) : '';
+          } catch (error) {
+            console.error(`[MDZip] Failed to read document text for ${message.path}:`, error);
+          }
+          void webviewPanel.webview.postMessage({
+            type: 'documentText',
+            requestId: message.requestId,
+            text,
+          } satisfies DocumentTextMessage);
+          break;
+        }
+
         case 'ready':
           // Webview is ready — send initial content
           await this._sendWorkspaceEditorContent(webviewPanel.webview, document);
@@ -1057,8 +1078,10 @@ interface WebviewMessage {
     | 'setLayout'
     | 'workspaceChanged'
     | 'workspaceSaved'
-    | 'workspaceFailed';
+    | 'workspaceFailed'
+    | 'readDocumentText';
   markdown?: string;
+  requestId?: number;
   archivePath?: string;
   archiveBase64?: string;
   base64Data?: string;
@@ -1110,6 +1133,12 @@ interface OpenWorkspaceDirectMessage {
   sourceFormat: 'mdz' | 'markdown';
   fileName: string;
   layout: LayoutMode;
+}
+
+interface DocumentTextMessage {
+  type: 'documentText';
+  requestId: number;
+  text: string;
 }
 
 interface ScrollSyncMessage {

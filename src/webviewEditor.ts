@@ -28,6 +28,12 @@ interface OpenWorkspaceDirectMessage {
   layout?: MdzipWorkspaceLayout;
 }
 
+interface DocumentTextMessage {
+  type: 'documentText';
+  requestId: number;
+  text: string;
+}
+
 const vscode = acquireVsCodeApi();
 const root = document.getElementById('mdzip-editor-root');
 
@@ -77,8 +83,30 @@ function updateDiskImageMap(assets: unknown[]): void {
 
 const loadingEl = document.getElementById('mdzip-loading');
 
-window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | OpenWorkspaceDirectMessage>) => {
+// Lazy document text: documents tagged lazyText by the host get a readText()
+// that round-trips through the extension host instead of carrying the full
+// text in the openWorkspaceDirect payload (which can be hundreds of MB).
+const pendingTextRequests = new Map<number, (text: string) => void>();
+let nextTextRequestId = 1;
+
+function requestDocumentText(path: string): Promise<string> {
+  return new Promise((resolve) => {
+    const requestId = nextTextRequestId++;
+    pendingTextRequests.set(requestId, resolve);
+    vscode.postMessage({ type: 'readDocumentText', requestId, path });
+  });
+}
+
+window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | OpenWorkspaceDirectMessage | DocumentTextMessage>) => {
   const message = event.data;
+  if (message?.type === 'documentText') {
+    const resolve = pendingTextRequests.get(message.requestId);
+    if (resolve) {
+      pendingTextRequests.delete(message.requestId);
+      resolve(message.text);
+    }
+    return;
+  }
   if (message?.type !== 'openWorkspace' && message?.type !== 'openWorkspaceDirect') {
     return;
   }
@@ -117,6 +145,16 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
       }));
     }
     updateDiskImageMap(Array.isArray(rawWorkspace.assets) ? rawWorkspace.assets : []);
+    // Reattach document readers for lazy documents (text stays on the host side
+    // until the document is actually opened in the navigator). The library clears
+    // isLazy when it materializes text through readText.
+    if (Array.isArray(rawWorkspace.documents)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rawWorkspace.documents = rawWorkspace.documents.map((doc: any) =>
+        doc?.isLazy && !doc.text
+          ? { ...doc, readText: () => requestDocumentText(doc.path as string) }
+          : doc);
+    }
     const openPromise = editor.openWorkspace(rawWorkspace, {
       sourceFormat: message.sourceFormat,
       fileName: message.fileName,
@@ -137,6 +175,13 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
 });
 
 postReadyUntilOpened();
+
+// Live theme sync: VS Code updates body attributes when the user switches
+// color theme. setColorScheme re-renders in place — no editor recreation, so
+// CodeMirror state and unsaved edits survive.
+new MutationObserver(() => {
+  editor?.setColorScheme(detectColorScheme());
+}).observe(document.body, { attributes: true, attributeFilter: ['data-vscode-theme-kind', 'class'] });
 
 
 function postSnapshot(

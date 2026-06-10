@@ -1,5 +1,19 @@
 # Change Log
 
+## [0.1.245] - 2026-06-10
+### Added
+- Live theme sync: the editor now follows VS Code color theme changes immediately, without recreating the editor or losing unsaved edits.
+- Added unit tests for the document lifecycle (open, save, save-as, revert) and an Extension Development Host integration suite for save behaviour.
+
+### Changed
+- Upgraded `@mdzip/editor` and `@mdzip/core-js` to 1.2.8. Image assets are stored uncompressed inside the ZIP (images are already compressed formats), making image paste near-instant instead of taking tens of seconds.
+- Large multi-document archives now open lazily: a 126MB archive with 749 documents opens in under a second, and document text is fetched on demand when opened from the contents tree.
+- Pasting an image into a plain `.md` file and choosing Convert now auto-saves the converted `.mdz` document instead of leaving an unsaved editor behind.
+
+### Fixed
+- Fixed clicking a document in the contents tree of a large archive showing an empty file.
+- Fixed potential data loss when editing multi-document archives: documents not yet opened could be written back empty on save (resolved in `@mdzip/core-js` 1.2.8 together with on-demand text loading in the extension).
+
 ## [0.1.182] - 2026-06-04
 ### Added
 - Added template-based `.mdz` document creation with built-in templates, custom template folders, folder templates, and prompted template parameters.

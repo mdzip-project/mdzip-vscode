@@ -1,10 +1,13 @@
 # Webview Theme Sync
 
-## Current state
+**Resolved.** `setColorScheme` was made public in `@mdzip/editor` 1.2.8 (option 1
+below), and mdzip-vscode 0.1.245 wires the `MutationObserver` in
+`webviewEditor.ts` exactly as sketched. The library method no-ops when the
+scheme is unchanged and deliberately does not fire `onColorSchemeChanged`
+(that callback reports user-initiated toolbar toggles only, so host-driven
+changes are never persisted as user choices).
 
-testasdf
-
-nother test
+## Current state (at time of writing)
 
 The editor reads VS Code's `data-vscode-theme-kind` body attribute at construction time and passes it as `initialColorScheme` to `MdzipWorkspaceView`. This covers the initial load correctly.
 
