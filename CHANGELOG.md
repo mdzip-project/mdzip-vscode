@@ -1,9 +1,14 @@
 # Change Log
 
-## [1.3.0] - 2026-06-11
+## [1.3.2] - 2026-06-11
+### Fixed
+- Removed the tracked workspace MCP config so the extension relies on the bundled provider instead of a stale repo-local server entry.
+
+## [1.3.1] - 2026-06-11
 ### Added
 - Added manifest-only patching in the extension host so title edits update `manifest.json` directly instead of forcing a full archive rebuild.
 - Added incremental raw-bytes handoff for small archives so archive mutations can patch existing ZIP bytes instead of reserializing the whole document.
+- Added an update-proof MCP launcher so workspace, user, and Codex server configs no longer pin a versioned extension install path.
 
 ### Changed
 - Upgraded the extension to the published `@mdzip/editor` and `@mdzip/core-js` 1.3.0 packages.

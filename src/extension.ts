@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
+import { promises as fs } from 'fs';
 import { execFile } from 'child_process';
 import type { GitExtension } from './vendor/git';
 import { MdzEditorProvider } from './mdzEditorProvider';
@@ -21,6 +22,8 @@ import {
 const BUNDLED_MCP_SERVER_LABEL = 'MDZip MCP Server';
 const BUNDLED_MCP_SERVER_KEY = 'MDZip';
 const LEGACY_BUNDLED_MCP_SERVER_KEY = 'mdzip';
+const MCP_LAUNCHER_FILENAME = 'mdzip-mcp-launcher.cjs';
+const MDZIP_EXTENSION_PACKAGE_NAME = 'mdzip-project.mdzip-vscode';
 let mdzipOutputChannel: vscode.OutputChannel | undefined;
 
 function logInfo(message: string, ...details: unknown[]): void {
@@ -195,10 +198,6 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
   context.subscriptions.push(MdzEditorProvider.register(context));
 
   const bundledServerPath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'mdz-mcp-server.js').fsPath;
-  const codexBundledServerConfig = {
-    command: 'node',
-    args: [bundledServerPath],
-  };
   const bundledServerConfig: { type: 'stdio'; command: string; args: string[] } = {
     type: 'stdio',
     command: 'node',
@@ -226,10 +225,11 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mdzip.copyMcpConfigSnippet', async () => {
+      const launcherConfig = await getGlobalLauncherMcpServerConfig(context);
       const snippet = JSON.stringify(
         {
           servers: {
-            [BUNDLED_MCP_SERVER_KEY]: bundledServerConfig,
+            [BUNDLED_MCP_SERVER_KEY]: launcherConfig,
           },
         },
         null,
@@ -267,7 +267,8 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
         config.servers = {};
       }
 
-      upsertBundledMcpServer(config.servers, bundledServerConfig);
+      const launcherConfig = await getWorkspaceLauncherMcpServerConfig(context);
+      upsertBundledMcpServer(config.servers, launcherConfig);
 
       await vscode.workspace.fs.createDirectory(vscodeDir);
       await vscode.workspace.fs.writeFile(
@@ -283,11 +284,12 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mdzip.enableUserMcp', async () => {
+      const launcherConfig = await getGlobalLauncherMcpServerConfig(context);
       const opened = await openBuiltInMcpConfiguration(['mcp', 'user', 'configuration']);
       const editor = vscode.window.activeTextEditor;
       if (!opened || !editor) {
         await vscode.env.clipboard.writeText(
-          JSON.stringify({ servers: { [BUNDLED_MCP_SERVER_KEY]: bundledServerConfig } }, null, 2)
+          JSON.stringify({ servers: { [BUNDLED_MCP_SERVER_KEY]: launcherConfig } }, null, 2)
         );
         vscode.window.showWarningMessage(
           'Could not open the user MCP configuration automatically. The MDZip MCP config snippet was copied to the clipboard instead.'
@@ -295,7 +297,7 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
         return;
       }
 
-      const nextText = mergeMcpConfigText(editor.document.getText(), bundledServerConfig);
+      const nextText = mergeMcpConfigText(editor.document.getText(), launcherConfig);
       const edit = new vscode.WorkspaceEdit();
       const end = editor.document.lineAt(editor.document.lineCount - 1).range.end;
       edit.replace(editor.document.uri, new vscode.Range(new vscode.Position(0, 0), end), `${nextText}\n`);
@@ -628,6 +630,7 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mdzip.enableCodexMcp', async () => {
+      const launcherConfig = await getGlobalLauncherMcpServerConfig(context);
       const target = await vscode.window.showQuickPick(
         [
           {
@@ -675,7 +678,7 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
         // Missing config is expected on first run.
       }
 
-      const nextText = upsertCodexMcpServerConfig(existingText, BUNDLED_MCP_SERVER_KEY, codexBundledServerConfig);
+      const nextText = upsertCodexMcpServerConfig(existingText, BUNDLED_MCP_SERVER_KEY, launcherConfig);
       await vscode.workspace.fs.createDirectory(parentUri(configUri));
       await vscode.workspace.fs.writeFile(configUri, new TextEncoder().encode(nextText));
 
@@ -1057,16 +1060,8 @@ function upsertBundledMcpServer(
   servers: Record<string, unknown>,
   serverConfig: { type: 'stdio'; command: string; args: string[] }
 ): void {
-  const legacyConfig = servers[LEGACY_BUNDLED_MCP_SERVER_KEY];
+  delete servers[LEGACY_BUNDLED_MCP_SERVER_KEY];
   servers[BUNDLED_MCP_SERVER_KEY] = serverConfig;
-
-  if (
-    legacyConfig &&
-    typeof legacyConfig === 'object' &&
-    JSON.stringify(legacyConfig) === JSON.stringify(serverConfig)
-  ) {
-    delete servers[LEGACY_BUNDLED_MCP_SERVER_KEY];
-  }
 }
 
 function getUserCodexConfigUri(): vscode.Uri {
@@ -1086,6 +1081,152 @@ function parentUri(uri: vscode.Uri): vscode.Uri {
     return vscode.Uri.file(path.dirname(uri.fsPath));
   }
   return uri.with({ path: path.posix.dirname(uri.path) });
+}
+
+async function getGlobalLauncherMcpServerConfig(context: vscode.ExtensionContext): Promise<{ type: 'stdio'; command: string; args: string[] }> {
+  const launcherUri = vscode.Uri.joinPath(context.globalStorageUri, MCP_LAUNCHER_FILENAME);
+  await ensureMcpLauncherScript(launcherUri);
+  return {
+    type: 'stdio',
+    command: 'node',
+    args: [launcherUri.fsPath],
+  };
+}
+
+async function getWorkspaceLauncherMcpServerConfig(context: vscode.ExtensionContext): Promise<{ type: 'stdio'; command: string; args: string[] }> {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    throw new Error('Open a workspace folder to enable workspace MCP configuration.');
+  }
+
+  const launcherUri = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode', MCP_LAUNCHER_FILENAME);
+  await ensureMcpLauncherScript(launcherUri);
+  return {
+    type: 'stdio',
+    command: 'node',
+    args: [launcherUri.fsPath],
+  };
+}
+
+async function ensureMcpLauncherScript(launcherUri: vscode.Uri): Promise<void> {
+  await vscode.workspace.fs.createDirectory(parentUri(launcherUri));
+  const existing = await readTextFile(launcherUri);
+  const next = buildMcpLauncherScript();
+  if (existing === next) {
+    return;
+  }
+  await vscode.workspace.fs.writeFile(launcherUri, new TextEncoder().encode(next));
+}
+
+function buildMcpLauncherScript(): string {
+  return [
+    '#!/usr/bin/env node',
+    "'use strict';",
+    '',
+    "const fs = require('fs');",
+    "const path = require('path');",
+    "const os = require('os');",
+    "const { spawn } = require('child_process');",
+    '',
+    `const EXTENSION_PACKAGE_NAME = ${JSON.stringify(MDZIP_EXTENSION_PACKAGE_NAME)};`,
+    'const CANDIDATE_ROOTS = [',
+    "  path.join(os.homedir(), '.vscode', 'extensions'),",
+    "  path.join(os.homedir(), '.vscode-insiders', 'extensions'),",
+    "  path.join(os.homedir(), '.vscode-server', 'extensions'),",
+    "  path.join(os.homedir(), '.vscode-server-insiders', 'extensions'),",
+    '];',
+    '',
+    'function parseVersion(version) {',
+    "  return version.split(/[.-]/).map((segment) => (segment === '' ? 0 : Number(segment)));",
+    '}',
+    '',
+    'function compareVersions(left, right) {',
+    '  const maxLength = Math.max(left.length, right.length);',
+    '  for (let index = 0; index < maxLength; index += 1) {',
+    '    const leftPart = left[index] ?? 0;',
+    '    const rightPart = right[index] ?? 0;',
+    '    if (leftPart === rightPart) {',
+    '      continue;',
+    '    }',
+    '    if (Number.isNaN(leftPart) || Number.isNaN(rightPart)) {',
+    '      return String(leftPart).localeCompare(String(rightPart));',
+    '    }',
+    '    return leftPart - rightPart;',
+    '  }',
+    '  return 0;',
+    '}',
+    '',
+    'function findInstalledExtensionRoot() {',
+    '  let bestMatch = null;',
+    '  for (const root of CANDIDATE_ROOTS) {',
+    '    let entries = [];',
+    '    try {',
+    "      entries = fs.readdirSync(root, { withFileTypes: true });",
+    '    } catch {',
+    '      continue;',
+    '    }',
+    '',
+    '    for (const entry of entries) {',
+    '      if (!entry.isDirectory()) {',
+    '        continue;',
+    '      }',
+    '      if (!entry.name.startsWith(`${EXTENSION_PACKAGE_NAME}-`)) {',
+    '        continue;',
+    '      }',
+    '      const version = entry.name.slice(EXTENSION_PACKAGE_NAME.length + 1);',
+    '      const candidateRoot = path.join(root, entry.name);',
+    "      const serverPath = path.join(candidateRoot, 'dist', 'mdz-mcp-server.js');",
+    '      if (!fs.existsSync(serverPath)) {',
+    '        continue;',
+    '      }',
+    '      if (!bestMatch) {',
+    '        bestMatch = { candidateRoot, version };',
+    '        continue;',
+    '      }',
+    '      const comparison = compareVersions(parseVersion(version), parseVersion(bestMatch.version));',
+    '      if (comparison > 0) {',
+    '        bestMatch = { candidateRoot, version };',
+    '      }',
+    '    }',
+    '  }',
+    '  return bestMatch?.candidateRoot ?? null;',
+    '}',
+    '',
+    'const extensionRoot = findInstalledExtensionRoot();',
+    'if (!extensionRoot) {',
+    "  console.error('Unable to locate an installed MDZip VS Code extension.');",
+    '  process.exit(1);',
+    '}',
+    '',
+    "const serverPath = path.join(extensionRoot, 'dist', 'mdz-mcp-server.js');",
+    'const child = spawn(process.execPath, [serverPath, ...process.argv.slice(2)], {',
+    "  stdio: 'inherit',",
+    '  env: process.env,',
+    '});',
+    '',
+    "child.on('error', (error) => {",
+    "  console.error(`Failed to start MDZip MCP server: ${error instanceof Error ? error.message : String(error)}`);",
+    '  process.exit(1);',
+    '});',
+    '',
+    "child.on('exit', (code, signal) => {",
+    '  if (signal) {',
+    '    process.kill(process.pid, signal);',
+    '    return;',
+    '  }',
+    '  process.exit(code ?? 0);',
+    '});',
+    '',
+  ].join('\n');
+}
+
+async function readTextFile(uri: vscode.Uri): Promise<string | undefined> {
+  try {
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    return new TextDecoder('utf-8').decode(bytes);
+  } catch {
+    return undefined;
+  }
 }
 
 async function canUseNodeCommand(): Promise<boolean> {
