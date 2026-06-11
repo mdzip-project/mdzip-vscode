@@ -23,6 +23,7 @@ interface OpenWorkspaceMessage {
 interface OpenWorkspaceDirectMessage {
   type: 'openWorkspaceDirect';
   workspace: string; // JSON-serialized workspace; assets have a pre-resolved dataUri field
+  bytesBase64?: string; // raw archive bytes for incremental patching (small archives only)
   sourceFormat: MdzipSourceFormat;
   fileName: string;
   layout?: MdzipWorkspaceLayout;
@@ -90,9 +91,19 @@ const pendingTextRequests = new Map<number, (text: string) => void>();
 let nextTextRequestId = 1;
 
 function requestDocumentText(path: string): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const requestId = nextTextRequestId++;
-    pendingTextRequests.set(requestId, resolve);
+    // A lost request must reject loudly (surfaces via onFailed → error toast)
+    // rather than leave callers awaiting forever with no visible failure.
+    const timer = window.setTimeout(() => {
+      pendingTextRequests.delete(requestId);
+      console.error(`[MDZip webview] readDocumentText timed out: ${path} (request ${requestId})`);
+      reject(new Error(`Timed out reading "${path}" from the extension host.`));
+    }, 30000);
+    pendingTextRequests.set(requestId, (text) => {
+      window.clearTimeout(timer);
+      resolve(text);
+    });
     vscode.postMessage({ type: 'readDocumentText', requestId, path });
   });
 }
@@ -158,6 +169,9 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
     const openPromise = editor.openWorkspace(rawWorkspace, {
       sourceFormat: message.sourceFormat,
       fileName: message.fileName,
+      // When present, asset/manifest edits patch these bytes incrementally
+      // instead of rebuilding the ZIP from the workspace.
+      archiveBytes: message.bytesBase64 ? base64ToBytes(message.bytesBase64) : undefined,
     });
     if (isFirst) {
       void openPromise.finally(() => { loadingEl?.remove(); });
@@ -175,6 +189,26 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
 });
 
 postReadyUntilOpened();
+
+// Suppress VS Code's default webview context menu (Cut/Copy/Paste) outside of
+// places where it is actually functional: text inputs, the CodeMirror editor,
+// and text selections in the preview. Everywhere else (nav tree, toolbar) the
+// default items do nothing and just look broken. The library's own context
+// menus (e.g. orphaned-asset actions) attach deeper and still work.
+// Capture phase: VS Code's webview bootstrap registers its own bubble-phase
+// contextmenu listener before this script loads, so a bubble-phase
+// preventDefault here runs too late for it to see. Capture runs first.
+window.addEventListener('contextmenu', (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  if (target?.closest('input, textarea, [contenteditable], .cm-editor')) {
+    return;
+  }
+  const selection = window.getSelection();
+  if (selection && !selection.isCollapsed) {
+    return;
+  }
+  event.preventDefault();
+}, { capture: true });
 
 // Live theme sync: VS Code updates body attributes when the user switches
 // color theme. setColorScheme re-renders in place — no editor recreation, so
@@ -229,6 +263,15 @@ function createEditor(
     initialColorScheme,
     onChanged: (bytes, snapshot) => {
       postSnapshot('workspaceChanged', bytes, snapshot);
+    },
+    // Manifest-only edits (e.g. title dialog) skip the archive rebuild entirely;
+    // the host patches manifest.json into the real bytes incrementally.
+    onManifestChanged: (event) => {
+      vscode.postMessage({
+        type: 'manifestChanged',
+        manifest: event.snapshot.workspace.manifest ?? null,
+        dirty: event.snapshot.dirty,
+      });
     },
     onSaved: (bytes, snapshot) => {
       postSnapshot('workspaceSaved', bytes, snapshot);

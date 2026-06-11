@@ -1,5 +1,32 @@
 # Change Log
 
+## [1.3.0] - 2026-06-11
+### Added
+- Added manifest-only patching in the extension host so title edits update `manifest.json` directly instead of forcing a full archive rebuild.
+- Added incremental raw-bytes handoff for small archives so archive mutations can patch existing ZIP bytes instead of reserializing the whole document.
+
+### Changed
+- Upgraded the extension to the published `@mdzip/editor` and `@mdzip/core-js` 1.3.0 packages.
+- Expanded the README command list and MCP setup guidance to cover archive diffs, extraction, and Codex config helpers.
+- Archived the finished `mdzip-editor-improvements` design note.
+
+### Fixed
+- Long-running on-demand document reads now time out with a visible error instead of hanging silently.
+- Removed the non-functional Cut/Copy/Paste context menu from the archive navigation pane and toolbar.
+
+## [0.1.249] - 2026-06-11
+### Fixed
+- Removed the non-functional Cut/Copy/Paste context menu in the editor's navigation pane and toolbar. The context menu still appears where it works: text inputs, the markdown editor, and selected preview text.
+
+## [0.1.247] - 2026-06-10
+### Changed
+- Upgraded `@mdzip/editor` and `@mdzip/core-js` to 1.2.9: archive mutations now patch existing ZIP bytes incrementally instead of rebuilding the whole archive (unchanged entries are copied verbatim).
+- Setting the document title is now near-instant on any archive size — manifest-only edits no longer rebuild the archive in the webview; the extension patches `manifest.json` into the real bytes directly (books.mdz: from tens of seconds to ~350ms).
+- Archives up to 16MB ship raw bytes to the editor so image paste and asset removal patch the ZIP incrementally too.
+
+### Fixed
+- A lost document-text request in the editor now fails with a visible error after 30s instead of leaving the editor silently unresponsive.
+
 ## [0.1.245] - 2026-06-10
 ### Added
 - Live theme sync: the editor now follows VS Code color theme changes immediately, without recreating the editor or losing unsaved edits.

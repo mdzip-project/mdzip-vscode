@@ -9,6 +9,7 @@ import {
   MdzipWorkspaceSnapshot,
   inferMdzipSourceFormat,
 } from '@mdzip/editor';
+import { MdzArchiveCore } from '@mdzip/core-js';
 
 /**
  * Represents an open .mdz document.
@@ -243,12 +244,29 @@ export class MdzDocument implements vscode.CustomDocument {
   /** The most recent bytes sent from the webview (updated on every workspaceChanged). */
   public get latestWebviewBytes(): Uint8Array | undefined { return this._latestWebviewBytes; }
 
+  /** Current archive bytes: latest webview edit if any, else the service's bytes. */
+  public currentArchiveBytes(): Uint8Array {
+    return this._latestWebviewBytes ?? this._service.snapshot().archiveBytes;
+  }
+
   /** True when the browser has converted this markdown document to .mdz format. */
   public get isConvertedToMdz(): boolean { return this._convertedToMdz; }
 
   /** Apply bytes received from the webview after a user edit. */
   public updateFromWebview(bytes: Uint8Array): void {
     this._latestWebviewBytes = bytes;
+  }
+
+  /**
+   * Apply a manifest-only change from the webview (onManifestChanged path).
+   * The webview skips its archive rebuild for manifest edits; the host patches
+   * the manifest entry into the real bytes incrementally — no document reads.
+   */
+  public async applyManifest(manifest: unknown): Promise<void> {
+    const current = this._latestWebviewBytes ?? this._service.snapshot().archiveBytes;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await MdzArchiveCore.updateFiles(current, [], [], { manifest: manifest as any });
+    this._latestWebviewBytes = new Uint8Array(await result.blob.arrayBuffer());
   }
 
   /** Record that the browser has converted this markdown workspace to .mdz. */

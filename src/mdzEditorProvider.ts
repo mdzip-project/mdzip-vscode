@@ -20,6 +20,8 @@ import {
 export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocument> {
   public static readonly VIEW_TYPE = 'mdzip.mdzEditor';
   public static readonly MARKDOWN_VIEW_TYPE = 'mdzip.mdEditor';
+  /** Archives up to this size ship raw bytes to the webview for incremental ZIP patching. */
+  private static readonly ARCHIVE_BYTES_INLINE_LIMIT = 16 * 1024 * 1024;
   private static readonly _nextOpenModes = new Map<string, EditorMode[]>();
   private static readonly _nextOpenLayouts = new Map<string, LayoutMode[]>();
   private static _instance: MdzEditorProvider | undefined;
@@ -423,12 +425,38 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           await this._openSideBySideForUri(document.uri);
           break;
 
+        case 'manifestChanged':
+          // Manifest-only edit from the webview (onManifestChanged path): no
+          // bytes were built there. Patch manifest.json into the real archive
+          // bytes here — incremental, no document reads.
+          try {
+            await document.applyManifest(message.manifest ?? null);
+          } catch (error) {
+            console.error('[MDZip] Failed to apply manifest change:', error);
+            vscode.window.showErrorMessage(
+              `MDZip: failed to apply manifest change: ${error instanceof Error ? error.message : String(error)}`
+            );
+            return;
+          }
+          document.markDirty();
+          this._onDidChangeCustomDocument.fire({
+            document,
+            undo: () => {
+              /* no-op for now */
+            },
+            redo: () => {
+              /* no-op for now */
+            },
+          });
+          break;
+
         case 'readDocumentText': {
           // On-demand text for a lazy document (large archives keep document
           // text on the host side; see getSerializedWorkspace).
           if (typeof message.requestId !== 'number' || typeof message.path !== 'string') {
             return;
           }
+          console.log(`[MDZip] readDocumentText request ${message.requestId}: ${message.path}`);
           let text = '';
           try {
             const bytes = await document.readPathBytes(message.path);
@@ -572,9 +600,20 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
         timeoutPromise,
       ]);
 
+      // Ship the raw archive bytes alongside the workspace when small enough:
+      // the service then patches asset/manifest edits into them incrementally
+      // instead of rebuilding the ZIP. Large archives stay on the lazy path
+      // (manifest edits are host-patched via onManifestChanged regardless).
+      const archiveBytes = document.sourceFormat === 'mdz' ? document.currentArchiveBytes() : undefined;
+      const bytesBase64 =
+        archiveBytes && archiveBytes.length > 0 && archiveBytes.length <= MdzEditorProvider.ARCHIVE_BYTES_INLINE_LIMIT
+          ? Buffer.from(archiveBytes).toString('base64')
+          : undefined;
+
       await webview.postMessage({
         type: 'openWorkspaceDirect',
         workspace: JSON.stringify(workspace),
+        bytesBase64,
         sourceFormat: document.sourceFormat,
         fileName,
         layout,
@@ -1079,9 +1118,11 @@ interface WebviewMessage {
     | 'workspaceChanged'
     | 'workspaceSaved'
     | 'workspaceFailed'
-    | 'readDocumentText';
+    | 'readDocumentText'
+    | 'manifestChanged';
   markdown?: string;
   requestId?: number;
+  manifest?: unknown;
   archivePath?: string;
   archiveBase64?: string;
   base64Data?: string;
@@ -1130,6 +1171,7 @@ interface OpenWorkspaceMessage {
 interface OpenWorkspaceDirectMessage {
   type: 'openWorkspaceDirect';
   workspace: string; // JSON-serialized workspace with pre-resolved asset dataUri fields
+  bytesBase64?: string; // raw archive bytes for incremental patching (small archives only)
   sourceFormat: 'mdz' | 'markdown';
   fileName: string;
   layout: LayoutMode;

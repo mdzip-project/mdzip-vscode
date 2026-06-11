@@ -88,3 +88,139 @@ The `openWorkspace` eager `readBytes` call (introduced in 1.2.4 to populate `byt
 **Shipped in `@mdzip/editor` 1.2.4.**
 
 `AGENTS.md` exists at the package root and covers: `open()` vs `openWorkspace()`, paste behaviour in markdown source files, `MdzWorkspace` runtime shape, VS Code preset, and the `archiveBytesWithPendingText()` performance optimisation.
+
+---
+
+## 4. Manifest-only changes should not trigger a full archive rebuild
+
+> **Status: DONE in 1.2.8 local tarballs (2026-06-10).**
+> Tier 1: all mutations (`setManifestTitle`, `addAsset`, `pasteImage`,
+> `removeAsset`) serialize via the new byte-level `MdzArchiveCore.updateFiles`
+> patcher when `archiveBytes` is available - `setManifestTitle` on books.mdz:
+> **569ms**, zero `readText()` calls (test-enforced).
+> Tier 2: with empty `archiveBytes`, `setManifestTitle` now builds **nothing**
+> - the manifest changes in memory and is folded into the next serialization.
+> The view skips `exportBytes()`/`onChanged` for manifest-only events when the
+> host registers `onManifestChanged` (opt-in).
+>
+> **Extension wired up in 0.1.247 (libraries 1.2.9):** `onManifestChanged` ->
+> `manifestChanged` message -> host patches via
+> `MdzArchiveCore.updateFiles(bytes, [], [], { manifest })`. Verified on
+> books.mdz: webview side 1ms with zero `readText` calls, host patch 352ms.
+> `openWorkspace(..., { archiveBytes })` is passed for archives <= 16MB so
+> asset ops (image paste, removal) patch incrementally too; larger archives
+> stay on the lazy path.
+
+### Problem
+
+`setManifestTitle` (and any future manifest-only edit: metadata fields, entry
+point, mode) goes through `serializeWorkspaceBytes()` -> `buildWorkspace()`,
+which reads **every** document and asset to rebuild the entire ZIP - to change
+one small JSON file.
+
+With 1.2.8 lazy documents this is much worse than it looks. For a host using
+`openWorkspace()` with serialized workspaces (VS Code), each lazy document's
+`readText()` is a webview<->host round-trip. Setting the title on books.mdz
+(126MB, 749 documents) means ~748 round-trips totalling ~324MB of text, plus
+building a 126MB ZIP inside the webview, plus base64-posting the whole archive
+back to the host. Observed: tens of seconds of "nothing happens" after
+clicking Save in the title dialog.
+
+The library already has the right primitive: `MdzArchiveCore.addFile(bytes,
+'manifest.json', json)` patches a single entry into existing archive bytes -
+`updateManifestTitleInArchive` in `archive-utils.ts` already does exactly
+this. It just isn't used by the service's manifest paths.
+
+### Proposal - two tiers
+
+**Tier 1: incremental patch when `archiveBytes` is available.**
+In `setManifestTitle` (and any manifest-only mutation), when
+`this.archiveBytes.length > 0`, replace the `serializeWorkspaceBytes()` call
+with an `addFile` patch:
+
+```js
+async setManifestTitle(newTitle) {
+    this.assertEditable('set manifest title');
+    this.commitPendingTextToWorkspace();
+    this.workspaceValue.manifest = MdzPackagerCore.updateManifest(this.workspaceValue.manifest, { title: newTitle });
+    this.workspaceValue.title = newTitle;
+    const nextBytes = this.archiveBytes.length > 0 && !this.pendingTextDirty
+        ? await blobToBytes((await MdzArchiveCore.addFile(this.archiveBytes, 'manifest.json',
+              JSON.stringify(this.workspaceValue.manifest, null, 2))).blob)
+        : await this.serializeWorkspaceBytes();
+    await this.reloadPreservingCurrentText(nextBytes);
+    this.dirtyValue = true;
+    this.emit('edit', ['manifest'], 'manifest.json');
+}
+```
+
+No document is ever read; unchanged ZIP entries are carried over. This fixes
+browser hosts that use `open(bytes)` directly.
+
+**Tier 2: host-delegated manifest changes for `openWorkspace()` hosts.**
+When `archiveBytes` is empty (pre-parsed workspace), the service cannot patch
+locally and currently has no choice but the full rebuild. The change event
+already carries `changes: ['manifest']` - the missing piece is that
+`MdzipWorkspaceView.notifyChanged` unconditionally calls `exportBytes()`
+whenever `onChanged` is registered, forcing the rebuild.
+
+Suggestion: add an opt-in `onManifestChanged(manifest, snapshot)` view option.
+When the event's `changes` is exactly `['manifest']` and the host registered
+`onManifestChanged`, skip the `exportBytes()`/`onChanged` path and invoke
+`onManifestChanged` instead. The host then applies the patch natively where
+the real bytes live - the VS Code extension would call
+`updateManifestTitleInArchive(realArchiveBytes, title)` on the extension-host
+side (milliseconds, no round-trips) and mark the document dirty itself.
+
+Hosts that don't register the callback keep today's behaviour, so this is
+backward compatible.
+
+### Other rebuild-triggering operations worth auditing
+
+`removeAsset` and `replaceAsset`/`addAsset` also call
+`serializeWorkspaceBytes()` and would pull all lazy documents through
+round-trips in serialized-workspace hosts. `addFile`/`removeFiles` on existing
+bytes could patch those incrementally too (Tier 1); they're less urgent than
+the title path because they're not in the first-five-minutes UX the way the
+title dialog is, but pasting an image into a large archive will hit the same
+wall.
+
+## 5. `addFile`/`removeFiles` recompress every unchanged entry
+
+> **Status: DONE in 1.2.8 local tarballs (2026-06-10).** Implemented as fix
+> direction 3 (hand-rolled ZIP splice): new `MdzArchiveCore.updateFiles(bytes,
+> writes, removals, { manifest })` parses the central directory and copies
+> unchanged entries' compressed data verbatim; only new/replaced entries are
+> compressed (deflate-raw via `CompressionStream`, STORE for images, JSZip
+> fallback for ZIP64/encrypted/non-UTF-8 archives). `addFile`, `removeFile`,
+> and `removeFiles` now delegate to it. Measured `addFile` of manifest.json
+> into books.mdz: **12.8s -> 332-454ms**. This unblocks the project-mode
+> FileSystemProvider per-file save path.
+
+**Benchmarked 2026-06-10 (core-js 1.2.8):** `MdzArchiveCore.addFile` of a
+tiny manifest.json into books.mdz (120MB, 749 documents) takes **12.8s**.
+JSZip's `generateAsync` decompresses and recompresses every DEFLATE entry
+even when only one entry changed.
+
+This caps the value of item 4 Tier 1 (a manifest patch still costs ~13s on a
+large archive instead of milliseconds) and is a hard blocker for the
+project-mode FileSystemProvider proposal
+([project-mode-folder-editing.md](../project-mode-folder-editing.md)), which
+needs per-file saves to patch the archive quickly.
+
+**Fix direction:** carry unchanged entries over verbatim - copy the raw
+compressed data and central-directory metadata for untouched entries instead
+of round-tripping them through pako. Options, in rough order of effort:
+
+1. JSZip exposes `compressedContent` internally; reusing it requires care but
+   avoids a dependency change.
+2. Switch incremental operations to a ZIP writer that supports raw-entry
+   copy (e.g. yazl/yauzl pairing or fflate's low-level APIs), keeping JSZip
+   for full builds.
+3. Hand-rolled: ZIP's format makes append/replace tractable - local file
+   headers + central directory are independent records; a replace can splice
+   the new entry and rewrite only the central directory.
+
+With STORE-compressed images (1.2.6+) the bulk of many archives is already
+memcpy on rebuild; this item extends the same principle to the DEFLATE
+document entries.

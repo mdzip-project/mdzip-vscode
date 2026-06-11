@@ -9,7 +9,7 @@ const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio
 let mdzipCorePromise;
 
 function getMdzipCore() {
-  mdzipCorePromise ||= import('mdzip-core-js');
+  mdzipCorePromise ||= import('@mdzip/core-js');
   return mdzipCorePromise;
 }
 

@@ -11,10 +11,12 @@ Visual Studio Code extension to read and write MDZip (`.mdz`) files, including p
 - **Image paste support** - pasted images are added to the archive and inserted into Markdown automatically.
 - **Document title editing** - set the package title from the toolbar.
 - **Archive contents browser** - browse Markdown, text, image, and binary entries inside `.mdz` archives.
+- **Git-aware diffs** - compare document Markdown or the whole archive against Git base.
+- **Archive extraction** - unpack an `.mdz` archive to a folder when you need loose files.
 - **Full save / Save As / Revert** - honors the standard VS Code document lifecycle.
 - **Template-based new documents** - create a fresh `.mdz` archive from built-in or custom templates using the Command Palette or folder context menu.
 - **Markdown conversion** - convert a `.md` file to an adjacent `.mdz`.
-- **Bundled MCP server** - let compatible AI agents inspect `.mdz` archives without extracting image files to disk.
+- **Bundled MCP server** - let compatible AI agents inspect `.mdz` archives without extracting image files to disk, and publish workspace, user, or Codex MCP config on demand.
 
 ## Requirements
 
@@ -82,15 +84,20 @@ If a Markdown image does not render in Preview, verify that the Markdown path ex
 - `MDZip: Configure Template Folder`
 - `MDZip: Open Templates Folder`
 - `MDZip: Convert .md To .mdz`
+- `MDZip: Compare Markdown`
+- `MDZip: Compare Document Markdown with Git Base`
+- `MDZip: Compare Archive Contents with Git Base`
 - `MDZip: Copy MCP Server Config Snippet`
 - `MDZip: Enable Workspace MCP Server`
 - `MDZip: Enable User MCP Server`
+- `MDZip: Enable Codex MCP Server`
 - `MDZip: Open Getting Started`
 - `MDZip: Open MCP Server Status`
 - `MDZip: Open Extension Help`
 - `MDZip: Open Documentation`
 - `MDZip: Visit mdzip.org`
 - `MDZip: Enable Workspace Agent Instructions`
+- `MDZip: Extract to Folder`
 
 ## Documentation
 
@@ -120,6 +127,7 @@ When VS Code prompts you to trust or start the bundled MDZip MCP server, approve
 
 - `MDZip: Enable Workspace MCP Server` writes or updates `.vscode/mcp.json` for the current workspace.
 - `MDZip: Enable User MCP Server` opens your user MCP configuration when possible and adds the MDZip server entry.
+- `MDZip: Enable Codex MCP Server` writes the bundled server entry for Codex-supported MCP config flows.
 - `MDZip: Copy MCP Server Config Snippet` copies a manual config snippet for workspace, user, or remote MCP configuration.
 - `MDZip: Enable Workspace Agent Instructions` writes `.github/copilot-instructions.md` guidance so agents prefer `mdz_review_document` for `.mdz` reviews.
 
