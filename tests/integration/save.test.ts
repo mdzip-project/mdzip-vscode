@@ -127,4 +127,38 @@ suite('MDZip save integration', () => {
 
     await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
   });
+
+  test('markdown: default override opens the built-in text diff', async () => {
+    const leftUri = vscode.Uri.file(path.join(tmpDir, 'diff-left.md'));
+    const rightUri = vscode.Uri.file(path.join(tmpDir, 'diff-right.md'));
+    fs.writeFileSync(leftUri.fsPath, '# Left\n');
+    fs.writeFileSync(rightUri.fsPath, '# Right\n');
+
+    const config = vscode.workspace.getConfiguration('workbench');
+    const previous = config.get<Record<string, string>>('editorAssociations');
+    await config.update(
+      'editorAssociations',
+      { ...(previous ?? {}), '*.md': 'mdzip.mdEditor' },
+      vscode.ConfigurationTarget.Global
+    );
+
+    try {
+      await vscode.commands.executeCommand(
+        '_workbench.diff',
+        leftUri,
+        rightUri,
+        'Markdown text diff',
+        [vscode.ViewColumn.Active, { preview: true, override: 'default' }]
+      );
+      await new Promise(r => setTimeout(r, 500));
+      const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+      assert.ok(
+        tab?.input instanceof vscode.TabInputTextDiff,
+        'the explicit default override should open a built-in text diff'
+      );
+    } finally {
+      await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+      await config.update('editorAssociations', previous, vscode.ConfigurationTarget.Global);
+    }
+  });
 });

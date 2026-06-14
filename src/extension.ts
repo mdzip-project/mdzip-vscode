@@ -762,19 +762,31 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
         const baseName = path.basename(target.fileUri.fsPath || target.fileUri.path);
         await MdzDiffPanel.open({
           title: `${baseName}: Archive Contents`,
+          resourceUri: target.fileUri,
           before: {
             label: 'HEAD',
             uri: target.baseUri,
             bytes: gitBytes ? new Uint8Array(gitBytes) : undefined,
+            loadBytes: async () => {
+              const bytes = await getGitBaseBytes(target.fileUri);
+              return bytes ? new Uint8Array(bytes) : undefined;
+            },
             missingMessage: 'This file has no readable HEAD version. It may be new, untracked, or renamed from a path without history.',
           },
           after: {
             label: 'Working Tree',
             uri: target.fileUri,
             bytes: workingBytes,
+            loadBytes: async () => {
+              try {
+                return await vscode.workspace.fs.readFile(target.fileUri);
+              } catch {
+                return undefined;
+              }
+            },
             missingMessage: 'The working-copy file is not readable. It may have been deleted.',
           },
-        });
+        }, context.extensionUri);
         logInfo('compareArchiveWithGitBase panel opened', baseName);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

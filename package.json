@@ -2,7 +2,7 @@
   "name": "mdzip-vscode",
   "displayName": "MDZip (.mdz) Editor",
   "description": "Read and write MDZip (.mdz) files including packaged images. Single document mode.",
-  "version": "1.3.2",
+  "version": "1.3.12",
   "icon": "media/icons/mdzip-marketplace-icon.png",
   "publisher": "mdzip-project",
   "license": "Apache-2.0",
@@ -411,9 +411,10 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run bundle",
-    "bundle": "npm run bundle:extension && npm run bundle:webview && npm run bundle:mcp",
+    "bundle": "npm run bundle:extension && npm run bundle:webview && npm run bundle:diff-webview && npm run bundle:mcp",
     "bundle:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --alias:jsdom=./src/jsdomStub.js --format=cjs --platform=node --minify",
     "bundle:webview": "esbuild src/webviewEditor.ts --bundle --outfile=media/editor.bundle.js --format=iife --platform=browser --minify",
+    "bundle:diff-webview": "esbuild src/webviewDiff.ts --bundle --outfile=media/diff.bundle.js --format=iife --platform=browser --minify",
     "bundle:mcp": "esbuild src/mdzMcpServer.ts --bundle --outfile=dist/mdz-mcp-server.js --format=cjs --platform=node --minify",
     "test:editor": "npm --prefix ../mdzip-editor/packages/editor test",
     "test:mcp-smoke": "npm run bundle:mcp && node tests/mcp-smoke.cjs",
@@ -438,7 +439,7 @@
   },
   "dependencies": {
     "@mdzip/core-js": "^1.3.0",
-    "@mdzip/editor": "^1.3.0",
+    "@mdzip/editor": "file:../mdzip-editor/local-packages/1.3.4/mdzip-editor-1.3.4.tgz",
     "@modelcontextprotocol/sdk": "^1.17.4",
     "jsdom": "^29.1.1",
     "marked": "^15.0.12"

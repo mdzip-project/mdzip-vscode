@@ -1,543 +1,287 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import {
-  createArchiveInventory,
-  diffArchiveInventories,
-  readCanonicalMarkdown,
-  escapeHtml,
-  type ArchiveInventoryDiff,
-  type CanonicalMarkdownReadResult,
-} from '@mdzip/editor';
 
 export interface MdzDiffSideInput {
   readonly label: string;
   readonly uri: vscode.Uri;
   readonly bytes?: Uint8Array;
+  readonly loadBytes?: () => Promise<Uint8Array | undefined>;
   readonly missingMessage?: string;
 }
 
 export interface MdzDiffInput {
   readonly title: string;
+  readonly resourceUri?: vscode.Uri;
   readonly before: MdzDiffSideInput;
   readonly after: MdzDiffSideInput;
 }
 
-interface MdzDiffSideModel {
+interface DiffWebviewSide {
   readonly label: string;
   readonly fileName: string;
-  readonly state: 'ready' | 'missing' | 'error';
+  readonly bytesBase64?: string;
   readonly missingMessage?: string;
-  readonly error?: string;
-  readonly markdown?: CanonicalMarkdownReadResult;
 }
 
-interface MdzDiffModel {
-  readonly title: string;
-  readonly before: MdzDiffSideModel;
-  readonly after: MdzDiffSideModel;
-  readonly inventoryDiff?: ArchiveInventoryDiff;
-  readonly markdownRows: MarkdownDiffRow[];
-}
-
-interface MarkdownDiffRow {
-  readonly kind: 'unchanged' | 'added' | 'removed' | 'changed';
-  readonly beforeLine?: number;
-  readonly afterLine?: number;
-  readonly beforeText?: string;
-  readonly afterText?: string;
-}
-
-interface LoadedSide {
-  readonly side: MdzDiffSideModel;
-  readonly inventory?: Awaited<ReturnType<typeof createArchiveInventory>>;
+interface DiffWebviewLoadMessage {
+  readonly type: 'loadDiff';
+  readonly before: DiffWebviewSide;
+  readonly after: DiffWebviewSide;
 }
 
 /**
  * Read-only semantic diff panel for comparing two MDZip archives.
  */
 export class MdzDiffPanel {
-  public static async open(input: MdzDiffInput): Promise<void> {
-    const model = await buildDiffModel(input);
-    const panel = vscode.window.createWebviewPanel(
+  private static readonly panels = new Map<string, MdzDiffPanel>();
+
+  public static hasForFilePath(filePath: string): boolean {
+    return MdzDiffPanel.panels.has(diffPanelKeyForUri(vscode.Uri.file(filePath)));
+  }
+
+  public static revealForFilePath(filePath: string): boolean {
+    const existing = MdzDiffPanel.panels.get(diffPanelKeyForUri(vscode.Uri.file(filePath)));
+    if (!existing) {
+      return false;
+    }
+    existing.panel.reveal(vscode.ViewColumn.Active);
+    return true;
+  }
+
+  public static async open(
+    input: MdzDiffInput,
+    extensionUri: vscode.Uri
+  ): Promise<void> {
+    const key = diffPanelKey(input);
+    const existing = MdzDiffPanel.panels.get(key);
+    if (existing) {
+      existing.input = input;
+      existing.panel.title = input.title;
+      existing.panel.reveal(vscode.ViewColumn.Active);
+      await existing.postInput();
+      return;
+    }
+
+    const instance = new MdzDiffPanel(key, input, extensionUri);
+    MdzDiffPanel.panels.set(key, instance);
+  }
+
+  private readonly panel: vscode.WebviewPanel;
+  private ready = false;
+
+  private constructor(
+    private readonly key: string,
+    private input: MdzDiffInput,
+    extensionUri: vscode.Uri
+  ) {
+    this.panel = vscode.window.createWebviewPanel(
       'mdzip.diff',
       input.title,
       vscode.ViewColumn.Active,
       {
-        enableScripts: false,
+        enableScripts: true,
         retainContextWhenHidden: true,
       }
     );
 
-    panel.webview.html = buildDiffHtml(model);
-  }
-}
+    this.panel.webview.html = buildDiffHtml(this.panel.webview, extensionUri, input.title);
+    const subscription = this.panel.webview.onDidReceiveMessage(async (event: unknown) => {
+      if (!event || typeof event !== 'object' || !('type' in event)) {
+        return;
+      }
 
-async function buildDiffModel(input: MdzDiffInput): Promise<MdzDiffModel> {
-  const [before, after] = await Promise.all([
-    loadSide(input.before),
-    loadSide(input.after),
-  ]);
-
-  const inventoryDiff = before.inventory && after.inventory
-    ? diffArchiveInventories(before.inventory, after.inventory)
-    : undefined;
-
-  const beforeMarkdown = before.side.markdown?.markdown ?? '';
-  const afterMarkdown = after.side.markdown?.markdown ?? '';
-  const markdownRows = before.side.state === 'ready' && after.side.state === 'ready'
-    ? diffMarkdownLines(beforeMarkdown, afterMarkdown)
-    : [];
-
-  return {
-    title: input.title,
-    before: before.side,
-    after: after.side,
-    inventoryDiff,
-    markdownRows,
-  };
-}
-
-async function loadSide(input: MdzDiffSideInput): Promise<LoadedSide> {
-  const fileName = path.posix.basename(input.uri.path) || path.basename(input.uri.fsPath || input.label);
-  const base = {
-    label: input.label,
-    fileName,
-  };
-
-  if (!input.bytes) {
-    return {
-      side: {
-        ...base,
-        state: 'missing',
-        missingMessage: input.missingMessage ?? 'This side of the comparison is not available.',
-      },
-    };
+      const typedEvent = event as { type: unknown; message?: unknown };
+      if (typedEvent.type === 'ready') {
+        this.ready = true;
+        await this.postInput();
+      } else if (typedEvent.type === 'refresh') {
+        await this.refresh();
+      } else if (typedEvent.type === 'failed') {
+        const detail = typeof typedEvent.message === 'string'
+          ? typedEvent.message
+          : 'Unknown diff view error';
+        console.error(`[MDZip] Diff view failed: ${detail}`);
+      }
+    });
+    this.panel.onDidDispose(() => {
+      subscription.dispose();
+      if (MdzDiffPanel.panels.get(this.key) === this) {
+        MdzDiffPanel.panels.delete(this.key);
+      }
+    });
   }
 
-  try {
-    const [markdown, inventory] = await Promise.all([
-      readCanonicalMarkdown(input.bytes),
-      createArchiveInventory(input.bytes),
+  private async refresh(): Promise<void> {
+    const [beforeBytes, afterBytes] = await Promise.all([
+      loadSideBytes(this.input.before),
+      loadSideBytes(this.input.after),
     ]);
-
-    return {
-      side: {
-        ...base,
-        state: 'ready',
-        markdown,
-      },
-      inventory,
+    this.input = {
+      ...this.input,
+      before: { ...this.input.before, bytes: beforeBytes },
+      after: { ...this.input.after, bytes: afterBytes },
     };
-  } catch (error) {
-    return {
-      side: {
-        ...base,
-        state: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      },
-    };
+    await this.postInput();
   }
-}
 
-function diffMarkdownLines(beforeText: string, afterText: string): MarkdownDiffRow[] {
-  const beforeLines = splitLines(beforeText);
-  const afterLines = splitLines(afterText);
-  const table = buildLcsTable(beforeLines, afterLines);
-  const operations: MarkdownDiffRow[] = [];
-
-  let beforeIndex = 0;
-  let afterIndex = 0;
-  while (beforeIndex < beforeLines.length && afterIndex < afterLines.length) {
-    if (beforeLines[beforeIndex] === afterLines[afterIndex]) {
-      operations.push({
-        kind: 'unchanged',
-        beforeLine: beforeIndex + 1,
-        afterLine: afterIndex + 1,
-        beforeText: beforeLines[beforeIndex],
-        afterText: afterLines[afterIndex],
-      });
-      beforeIndex++;
-      afterIndex++;
-    } else if (table[beforeIndex + 1][afterIndex] >= table[beforeIndex][afterIndex + 1]) {
-      operations.push({
-        kind: 'removed',
-        beforeLine: beforeIndex + 1,
-        beforeText: beforeLines[beforeIndex],
-      });
-      beforeIndex++;
-    } else {
-      operations.push({
-        kind: 'added',
-        afterLine: afterIndex + 1,
-        afterText: afterLines[afterIndex],
-      });
-      afterIndex++;
+  private async postInput(): Promise<void> {
+    if (!this.ready) {
+      return;
     }
+    const message: DiffWebviewLoadMessage = {
+      type: 'loadDiff',
+      before: toWebviewSide(this.input.before),
+      after: toWebviewSide(this.input.after),
+    };
+    await this.panel.webview.postMessage(message);
   }
-
-  while (beforeIndex < beforeLines.length) {
-    operations.push({
-      kind: 'removed',
-      beforeLine: beforeIndex + 1,
-      beforeText: beforeLines[beforeIndex],
-    });
-    beforeIndex++;
-  }
-
-  while (afterIndex < afterLines.length) {
-    operations.push({
-      kind: 'added',
-      afterLine: afterIndex + 1,
-      afterText: afterLines[afterIndex],
-    });
-    afterIndex++;
-  }
-
-  return pairChangedRows(operations);
 }
 
-function splitLines(text: string): string[] {
-  if (!text) {
-    return [];
-  }
-  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+function diffPanelKey(input: MdzDiffInput): string {
+  const uri = input.resourceUri
+    ?? (input.after.uri.path ? input.after.uri : input.before.uri);
+  return diffPanelKeyForUri(uri);
 }
 
-function buildLcsTable(beforeLines: readonly string[], afterLines: readonly string[]): number[][] {
-  const table = Array.from({ length: beforeLines.length + 1 }, () =>
-    Array.from({ length: afterLines.length + 1 }, () => 0)
+function diffPanelKeyForUri(uri: vscode.Uri): string {
+  const value = `${uri.scheme}:${uri.authority}:${uri.path}`;
+  return process.platform === 'win32' ? value.toLowerCase() : value;
+}
+
+async function loadSideBytes(input: MdzDiffSideInput): Promise<Uint8Array | undefined> {
+  if (input.loadBytes) {
+    return input.loadBytes();
+  }
+  try {
+    return await vscode.workspace.fs.readFile(input.uri);
+  } catch {
+    return undefined;
+  }
+}
+
+function toWebviewSide(input: MdzDiffSideInput): DiffWebviewSide {
+  return {
+    label: input.label,
+    fileName: path.posix.basename(input.uri.path)
+      || path.basename(input.uri.fsPath || input.label),
+    bytesBase64: input.bytes
+      ? Buffer.from(input.bytes).toString('base64')
+      : undefined,
+    missingMessage: input.missingMessage,
+  };
+}
+
+function buildDiffHtml(
+  webview: vscode.Webview,
+  extensionUri: vscode.Uri,
+  title: string
+): string {
+  const scriptUri = webview.asWebviewUri(
+    vscode.Uri.joinPath(extensionUri, 'media', 'diff.bundle.js')
   );
+  const nonce = getNonce();
 
-  for (let beforeIndex = beforeLines.length - 1; beforeIndex >= 0; beforeIndex--) {
-    for (let afterIndex = afterLines.length - 1; afterIndex >= 0; afterIndex--) {
-      table[beforeIndex][afterIndex] = beforeLines[beforeIndex] === afterLines[afterIndex]
-        ? table[beforeIndex + 1][afterIndex + 1] + 1
-        : Math.max(table[beforeIndex + 1][afterIndex], table[beforeIndex][afterIndex + 1]);
-    }
-  }
-
-  return table;
-}
-
-function pairChangedRows(rows: readonly MarkdownDiffRow[]): MarkdownDiffRow[] {
-  const paired: MarkdownDiffRow[] = [];
-
-  for (let index = 0; index < rows.length; index++) {
-    const row = rows[index];
-    const next = rows[index + 1];
-    if (row.kind === 'removed' && next?.kind === 'added') {
-      paired.push({
-        kind: 'changed',
-        beforeLine: row.beforeLine,
-        afterLine: next.afterLine,
-        beforeText: row.beforeText,
-        afterText: next.afterText,
-      });
-      index++;
-      continue;
-    }
-
-    paired.push(row);
-  }
-
-  return paired;
-}
-
-function buildDiffHtml(model: MdzDiffModel): string {
   return /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none';
+                 img-src blob: data:;
+                 style-src ${webview.cspSource} 'unsafe-inline';
+                 script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(model.title)}</title>
+  <title>${escapeHtml(title)}</title>
   <style>
-    :root {
-      color-scheme: light dark;
-    }
-
+    html, body { height: 100%; margin: 0; }
     body {
-      margin: 0;
-      color: var(--vscode-foreground);
-      background: var(--vscode-editor-background);
-      font-family: var(--vscode-font-family);
-      font-size: var(--vscode-font-size);
-    }
-
-    main {
-      max-width: 1180px;
-      margin: 0 auto;
-      padding: 20px;
-    }
-
-    h1,
-    h2,
-    h3 {
-      margin: 0;
-      font-weight: 600;
-    }
-
-    h1 {
-      font-size: 20px;
-      margin-bottom: 16px;
-    }
-
-    h2 {
-      font-size: 15px;
-      margin: 24px 0 10px;
-    }
-
-    h3 {
-      font-size: 13px;
-      margin-bottom: 8px;
-    }
-
-    .summary {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 10px;
-    }
-
-    .side,
-    .stat,
-    .state {
-      border: 1px solid var(--vscode-panel-border);
-      border-radius: 6px;
-      padding: 12px;
-      background: var(--vscode-editorWidget-background);
-    }
-
-    .side-label,
-    .muted {
-      color: var(--vscode-descriptionForeground);
-    }
-
-    .stats {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 12px;
-    }
-
-    .stat {
-      min-width: 94px;
-    }
-
-    .stat strong {
-      display: block;
-      font-size: 18px;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-
-    th,
-    td {
-      border: 1px solid var(--vscode-panel-border);
-      padding: 6px 8px;
-      text-align: left;
-      vertical-align: top;
-    }
-
-    th {
-      color: var(--vscode-descriptionForeground);
-      font-weight: 600;
-      background: var(--vscode-editorWidget-background);
-    }
-
-    .status {
-      display: inline-block;
-      min-width: 72px;
-      border-radius: 999px;
-      padding: 2px 8px;
-      text-align: center;
-      font-size: 12px;
-      text-transform: capitalize;
-    }
-
-    .status-added,
-    .line-added {
-      background: var(--vscode-diffEditor-insertedTextBackground);
-    }
-
-    .status-removed,
-    .line-removed {
-      background: var(--vscode-diffEditor-removedTextBackground);
-    }
-
-    .status-changed,
-    .line-changed {
-      background: var(--vscode-editorWarning-background);
-    }
-
-    .status-unchanged {
-      color: var(--vscode-descriptionForeground);
-      background: var(--vscode-badge-background);
-    }
-
-    .markdown-diff {
-      border: 1px solid var(--vscode-panel-border);
-      border-radius: 6px;
+      --mdzip-foreground-color: var(--vscode-foreground);
+      --mdzip-background-color: var(--vscode-editor-background);
+      --mdzip-muted-foreground-color: var(--vscode-descriptionForeground);
+      --mdzip-border-color: var(--vscode-panel-border);
+      --mdzip-hover-background-color: var(--vscode-list-hoverBackground);
+      --mdzip-accent-color: var(--vscode-focusBorder);
       overflow: hidden;
     }
-
-    .diff-row {
-      display: grid;
-      grid-template-columns: 64px minmax(0, 1fr) 64px minmax(0, 1fr);
-      border-top: 1px solid var(--vscode-panel-border);
+    #mdzip-diff-toolbar {
+      box-sizing: border-box;
+      display: flex;
+      gap: 6px;
+      height: 36px;
+      padding: 4px 8px;
     }
-
-    .diff-row:first-child {
-      border-top: 0;
+    .mdzip-diff-toolbar-button {
+      background: var(--vscode-button-secondaryBackground);
+      border: 0;
+      color: var(--vscode-button-secondaryForeground);
+      cursor: pointer;
+      padding: 3px 10px;
     }
-
-    .line-number {
-      padding: 5px 8px;
-      color: var(--vscode-editorLineNumber-foreground);
-      background: var(--vscode-editorGutter-background);
-      text-align: right;
-      user-select: none;
+    .mdzip-diff-toolbar-button:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
     }
-
-    pre {
-      margin: 0;
-      padding: 5px 8px;
-      min-height: 18px;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      font-family: var(--vscode-editor-font-family);
-      font-size: var(--vscode-editor-font-size);
-      line-height: 1.45;
+    .mdzip-diff-toolbar-icon-button {
+      align-items: center;
+      background: transparent;
+      color: var(--vscode-foreground);
+      display: inline-flex;
+      justify-content: center;
+      margin-right: auto;
+      padding: 3px 6px;
     }
-
-    .state {
-      margin-top: 10px;
-      border-color: var(--vscode-inputValidation-warningBorder);
+    .mdzip-diff-toolbar-icon-button[aria-pressed="true"] {
+      background: var(--vscode-toolbar-activeBackground);
+    }
+    .mdzip-diff-toolbar-icon-button svg {
+      height: 18px;
+      width: 18px;
+    }
+    #mdzip-diff-loading {
+      align-items: center;
+      color: var(--vscode-descriptionForeground);
+      display: flex;
+      height: calc(100% - 36px);
+      justify-content: center;
+    }
+    #mdzip-diff-loading[hidden],
+    #mdzip-diff-root[hidden] {
+      display: none;
+    }
+    #mdzip-diff-root {
+      height: calc(100% - 36px);
     }
   </style>
 </head>
 <body>
-  <main>
-    <h1>${escapeHtml(model.title)}</h1>
-    ${renderSummary(model)}
-    ${renderSideStates(model)}
-    ${renderMarkdownDiff(model)}
-    ${renderInventoryDiff(model.inventoryDiff)}
-  </main>
+  <div id="mdzip-diff-toolbar">
+    <button class="mdzip-diff-toolbar-button mdzip-diff-toolbar-icon-button"
+            id="mdzip-diff-toggle-navigation" type="button"
+            title="Hide archive navigation" aria-label="Hide archive navigation"
+            aria-pressed="true"></button>
+    <button class="mdzip-diff-toolbar-button" id="mdzip-diff-refresh"
+            type="button" title="Reload both archive revisions">Refresh</button>
+  </div>
+  <div id="mdzip-diff-loading">Loading archive comparison...</div>
+  <main id="mdzip-diff-root" hidden></main>
+  <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
 }
 
-function renderSummary(model: MdzDiffModel): string {
-  const inventoryDiff = model.inventoryDiff;
-  return /* html */ `<section>
-  <div class="summary">
-    ${renderSide(model.before)}
-    ${renderSide(model.after)}
-  </div>
-  <div class="stats">
-    <div class="stat"><strong>${inventoryDiff?.addedCount ?? 0}</strong><span class="muted">Added</span></div>
-    <div class="stat"><strong>${inventoryDiff?.removedCount ?? 0}</strong><span class="muted">Removed</span></div>
-    <div class="stat"><strong>${inventoryDiff?.changedCount ?? 0}</strong><span class="muted">Changed</span></div>
-  </div>
-</section>`;
-}
-
-function renderSide(side: MdzDiffSideModel): string {
-  const entryPoint = side.markdown?.entryPoint;
-  return /* html */ `<div class="side">
-  <div class="side-label">${escapeHtml(side.label)}</div>
-  <h3>${escapeHtml(side.fileName)}</h3>
-  ${entryPoint ? `<div class="muted">Entry point: ${escapeHtml(entryPoint)}</div>` : ''}
-</div>`;
-}
-
-function renderSideStates(model: MdzDiffModel): string {
-  const states = [model.before, model.after]
-    .filter((side) => side.state !== 'ready')
-    .map((side) => {
-      const message = side.state === 'missing'
-        ? side.missingMessage ?? 'This side of the comparison is not available.'
-        : `Unable to parse this side as MDZip: ${side.error ?? 'Unknown error'}`;
-      return `<div class="state"><strong>${escapeHtml(side.label)}:</strong> ${escapeHtml(message)}</div>`;
-    });
-
-  return states.length > 0 ? states.join('\n') : '';
-}
-
-function renderMarkdownDiff(model: MdzDiffModel): string {
-  if (model.before.state !== 'ready' || model.after.state !== 'ready') {
-    return /* html */ `<section>
-  <h2>Canonical Markdown</h2>
-  <p class="muted">Markdown diff is available when both sides contain readable MDZip archives.</p>
-</section>`;
+function getNonce(): string {
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let value = '';
+  for (let index = 0; index < 32; index++) {
+    value += characters.charAt(Math.floor(Math.random() * characters.length));
   }
-
-  if (model.markdownRows.length === 0) {
-    return /* html */ `<section>
-  <h2>Canonical Markdown</h2>
-  <p class="muted">No canonical markdown changes.</p>
-</section>`;
-  }
-
-  return /* html */ `<section>
-  <h2>Canonical Markdown</h2>
-  <div class="markdown-diff">
-    ${model.markdownRows.map(renderMarkdownDiffRow).join('\n')}
-  </div>
-</section>`;
+  return value;
 }
 
-function renderMarkdownDiffRow(row: MarkdownDiffRow): string {
-  const beforeClass = row.kind === 'added' ? '' : ` line-${row.kind}`;
-  const afterClass = row.kind === 'removed' ? '' : ` line-${row.kind}`;
-
-  return /* html */ `<div class="diff-row">
-  <div class="line-number">${row.beforeLine ?? ''}</div>
-  <pre class="${beforeClass.trim()}">${escapeHtml(row.beforeText ?? '')}</pre>
-  <div class="line-number">${row.afterLine ?? ''}</div>
-  <pre class="${afterClass.trim()}">${escapeHtml(row.afterText ?? '')}</pre>
-</div>`;
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
-
-function renderInventoryDiff(inventoryDiff: ArchiveInventoryDiff | undefined): string {
-  if (!inventoryDiff) {
-    return /* html */ `<section>
-  <h2>Archive Inventory</h2>
-  <p class="muted">Inventory diff is available when both sides contain readable MDZip archives.</p>
-</section>`;
-  }
-
-  if (inventoryDiff.entries.length === 0) {
-    return /* html */ `<section>
-  <h2>Archive Inventory</h2>
-  <p class="muted">No archive entries.</p>
-</section>`;
-  }
-
-  return /* html */ `<section>
-  <h2>Archive Inventory</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Status</th>
-        <th>Path</th>
-        <th>Kind</th>
-        <th>Before</th>
-        <th>After</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${inventoryDiff.entries.map((entry) => /* html */ `<tr>
-        <td><span class="status status-${entry.status}">${escapeHtml(entry.status)}</span></td>
-        <td>${escapeHtml(entry.path)}</td>
-        <td>${escapeHtml(entry.kind)}</td>
-        <td>${entry.before ? `${entry.before.size} bytes` : ''}</td>
-        <td>${entry.after ? `${entry.after.size} bytes` : ''}</td>
-      </tr>`).join('\n')}
-    </tbody>
-  </table>
-</section>`;
-}
-

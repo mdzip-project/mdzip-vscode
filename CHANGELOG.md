@@ -1,5 +1,32 @@
 # Change Log
 
+## [1.3.10] - 2026-06-14
+### Fixed
+- Reopening an `.mdz` file from Git changes now reuses its existing archive diff instead of scheduling another diff view.
+- Existing archive diffs are now revealed only after the transient Git custom-editor panel is closed, preventing a regular editor tab from flashing briefly.
+
+### Added
+- Archive diff views can now hide and restore the navigation pane with a familiar left-aligned panel icon.
+
+## [1.3.8] - 2026-06-13
+### Changed
+- Upgraded to the local `@mdzip/editor` 1.3.4 package.
+- Archive comparisons now use the interactive MDZip diff view with a status-aware navigation pane, read-only side-by-side text diffs, and image or binary metadata comparisons.
+
+## [1.3.6] - 2026-06-12
+### Fixed
+- `.mdz` files opened from Git changes now show the archive-aware contents comparison instead of opening each revision as a normal custom editor.
+
+## [1.3.5] - 2026-06-12
+### Fixed
+- Markdown files opened from Git changes now use VS Code's built-in text diff even when MDZip is configured as the default `.md` editor.
+
+## [1.3.4] - 2026-06-12
+### Changed
+- Large `.mdz` archives now provide their backing ZIP bytes to the editor so image and asset mutations remain incremental and preserve the latest document text.
+- Serialized archive workspaces now report packaged images that are no longer referenced by Markdown.
+- Initial editor content is sent only once when the webview starts.
+
 ## [1.3.2] - 2026-06-11
 ### Fixed
 - Removed the tracked workspace MCP config so the extension relies on the bundled provider instead of a stale repo-local server entry.

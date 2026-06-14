@@ -159,3 +159,33 @@ test('.mdz save writes webview bytes, not original archive', async () => {
   assert.deepEqual(saved, editedBytes, '.mdz save must write the webview bytes');
   doc.dispose();
 });
+
+test('serialized .mdz workspace identifies packaged images missing from markdown', async () => {
+  const { buildNewArchiveBytesWithTitle } = await import('@mdzip/editor');
+  const markdown = [
+    '# Images',
+    '',
+    '![One](images/one.png)',
+    '![Two](images/two.png)',
+    '![Three](images/three.png)',
+    '',
+  ].join('\n');
+  const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+  const archiveBytes = await buildNewArchiveBytesWithTitle(markdown, 'images', [
+    { archivePath: 'images/one.png', fileBytes: imageBytes },
+    { archivePath: 'images/two.png', fileBytes: imageBytes },
+    { archivePath: 'images/three.png', fileBytes: imageBytes },
+    { archivePath: 'images/unused-four.png', fileBytes: imageBytes },
+    { archivePath: 'images/unused-five.png', fileBytes: imageBytes },
+  ]);
+  seedFs({ '/doc.mdz': archiveBytes });
+
+  const doc = await MdzDocument.create(fakeUri('/doc.mdz'));
+  const workspace = await doc.getSerializedWorkspace();
+
+  assert.deepEqual(
+    workspace.orphanedAssets.orphanedAssetPaths,
+    ['images/unused-five.png', 'images/unused-four.png']
+  );
+  doc.dispose();
+});

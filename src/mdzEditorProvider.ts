@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { MdzDocument } from './mdzDocument';
+import { MdzDiffPanel } from './mdzDiffPanel';
 import {
   buildNewArchiveBytesWithTitle,
   displayTitleFromManifest,
@@ -20,8 +21,6 @@ import {
 export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocument> {
   public static readonly VIEW_TYPE = 'mdzip.mdzEditor';
   public static readonly MARKDOWN_VIEW_TYPE = 'mdzip.mdEditor';
-  /** Archives up to this size ship raw bytes to the webview for incremental ZIP patching. */
-  private static readonly ARCHIVE_BYTES_INLINE_LIMIT = 16 * 1024 * 1024;
   private static readonly _nextOpenModes = new Map<string, EditorMode[]>();
   private static readonly _nextOpenLayouts = new Map<string, LayoutMode[]>();
   private static _instance: MdzEditorProvider | undefined;
@@ -30,6 +29,8 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
   private readonly _modeByWebview = new WeakMap<vscode.Webview, EditorMode>();
   private readonly _isMarkdownEditorByWebview = new WeakMap<vscode.Webview, boolean>();
   private readonly _splitLayoutUris = new Set<string>();
+  private readonly _pendingMarkdownGitDiffs = new Map<string, PendingMarkdownGitDiff>();
+  private readonly _pendingMdzGitDiffs = new Map<string, PendingMdzGitDiff>();
 
   /** Hint that the next open for this URI should start in source edit mode. */
   public static markNextOpenInEdit(uri: vscode.Uri): void {
@@ -193,6 +194,22 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     webviewPanel: vscode.WebviewPanel,
     _token: vscode.CancellationToken
   ): Promise<void> {
+    if (
+      webviewPanel.viewType === MdzEditorProvider.VIEW_TYPE
+      && document.uri.scheme === 'git'
+      && this._redirectMdzGitDiff(document, webviewPanel)
+    ) {
+      return;
+    }
+
+    if (
+      webviewPanel.viewType === MdzEditorProvider.MARKDOWN_VIEW_TYPE
+      && document.uri.scheme === 'git'
+      && this._redirectMarkdownGitDiff(document.uri, webviewPanel)
+    ) {
+      return;
+    }
+
     if (!this._trackPanel(document.uri, webviewPanel)) {
       webviewPanel.dispose();
       vscode.window.showInformationMessage(
@@ -220,6 +237,13 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
     // Handle messages from the webview
     let convertSaveTimer: ReturnType<typeof setTimeout> | null = null;
+    let initialContentSend: Promise<void> | null = null;
+    const sendInitialContent = (): Promise<void> => {
+      if (!initialContentSend) {
+        initialContentSend = this._sendWorkspaceEditorContent(webviewPanel.webview, document);
+      }
+      return initialContentSend;
+    };
     webviewPanel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
       switch (message.type) {
         case 'edit':
@@ -474,7 +498,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
         case 'ready':
           // Webview is ready — send initial content
-          await this._sendWorkspaceEditorContent(webviewPanel.webview, document);
+          await sendInitialContent();
           break;
       }
     });
@@ -499,7 +523,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
     webviewPanel.webview.html = this._buildWebviewHtml(webviewPanel.webview, document);
     // Send content asynchronously so webview renders immediately
-    this._sendWorkspaceEditorContent(webviewPanel.webview, document).catch(error => {
+    sendInitialContent().catch(error => {
       console.error('[MDZip] Error sending workspace content:', error);
     });
   }
@@ -600,13 +624,13 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
         timeoutPromise,
       ]);
 
-      // Ship the raw archive bytes alongside the workspace when small enough:
-      // the service then patches asset/manifest edits into them incrementally
-      // instead of rebuilding the ZIP. Large archives stay on the lazy path
-      // (manifest edits are host-patched via onManifestChanged regardless).
+      // Always ship the backing archive bytes. Without them, image paste and
+      // other asset mutations rebuild the full workspace in the webview. On
+      // large archives that can complete with a stale text snapshot after the
+      // user has continued editing.
       const archiveBytes = document.sourceFormat === 'mdz' ? document.currentArchiveBytes() : undefined;
       const bytesBase64 =
-        archiveBytes && archiveBytes.length > 0 && archiveBytes.length <= MdzEditorProvider.ARCHIVE_BYTES_INLINE_LIMIT
+        archiveBytes && archiveBytes.length > 0
           ? Buffer.from(archiveBytes).toString('base64')
           : undefined;
 
@@ -998,6 +1022,187 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     await vscode.commands.executeCommand('vscode.openWith', targetUri, MdzEditorProvider.VIEW_TYPE);
   }
 
+  private _redirectMarkdownGitDiff(
+    uri: vscode.Uri,
+    webviewPanel: vscode.WebviewPanel
+  ): boolean {
+    const gitInput = parseGitInput(uri);
+    if (!gitInput || !/\.md$/i.test(gitInput.path)) {
+      return false;
+    }
+
+    const key = normalizeFileSystemPath(gitInput.path);
+    let pending = this._pendingMarkdownGitDiffs.get(key);
+    if (!pending) {
+      pending = {
+        filePath: gitInput.path,
+        inputs: new Map(),
+        panels: new Set(),
+      };
+      this._pendingMarkdownGitDiffs.set(key, pending);
+    }
+
+    pending.inputs.set(uri.toString(), { uri, ref: gitInput.ref });
+    pending.panels.add(webviewPanel);
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+    }
+    pending.timer = setTimeout(() => {
+      void this._openBuiltInMarkdownGitDiff(key);
+    }, 200);
+    return true;
+  }
+
+  private async _openBuiltInMarkdownGitDiff(key: string): Promise<void> {
+    const pending = this._pendingMarkdownGitDiffs.get(key);
+    if (!pending) {
+      return;
+    }
+    this._pendingMarkdownGitDiffs.delete(key);
+
+    for (const panel of pending.panels) {
+      panel.dispose();
+    }
+    for (const input of pending.inputs.values()) {
+      this._documentsByUri.delete(input.uri.toString());
+    }
+
+    const inputs = [...pending.inputs.values()];
+    const rightInput = inputs.find(input => input.ref === '');
+    const leftInput = inputs.find(input => input !== rightInput);
+    const onlyInput = inputs.length === 1 ? inputs[0] : undefined;
+    const leftUri = onlyInput?.ref === ''
+      ? gitUriWithRef(onlyInput.uri, 'HEAD')
+      : leftInput?.uri ?? onlyInput?.uri;
+    const rightUri = rightInput?.uri ?? vscode.Uri.file(pending.filePath);
+    if (!leftUri) {
+      return;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    if (
+      activeTab
+      && activeTab.input === undefined
+      && activeTab.label.toLowerCase().includes(path.basename(pending.filePath).toLowerCase())
+    ) {
+      await vscode.window.tabGroups.close(activeTab);
+    }
+
+    try {
+      // Stable VS Code does not expose the customEditorPriority proposal. The
+      // workbench command's default override keeps Git diffs in the text editor.
+      await vscode.commands.executeCommand(
+        '_workbench.diff',
+        leftUri,
+        rightUri,
+        `${path.basename(pending.filePath)} (Changes)`,
+        [vscode.ViewColumn.Active, { preview: true, override: 'default' }]
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      vscode.window.showErrorMessage(`Unable to open the Markdown text diff: ${message}`);
+    }
+  }
+
+  private _redirectMdzGitDiff(
+    document: MdzDocument,
+    webviewPanel: vscode.WebviewPanel
+  ): boolean {
+    const gitInput = parseGitInput(document.uri);
+    if (!gitInput || !/\.mdz$/i.test(gitInput.path)) {
+      return false;
+    }
+
+    const key = normalizeFileSystemPath(gitInput.path);
+    if (MdzDiffPanel.hasForFilePath(gitInput.path)) {
+      webviewPanel.dispose();
+      this._documentsByUri.delete(document.uri.toString());
+      MdzDiffPanel.revealForFilePath(gitInput.path);
+      return true;
+    }
+
+    let pending = this._pendingMdzGitDiffs.get(key);
+    if (!pending) {
+      pending = {
+        filePath: gitInput.path,
+        inputs: new Map(),
+        panels: new Set(),
+      };
+      this._pendingMdzGitDiffs.set(key, pending);
+    }
+
+    pending.inputs.set(document.uri.toString(), {
+      uri: document.uri,
+      ref: gitInput.ref,
+      bytes: document.currentArchiveBytes(),
+    });
+    pending.panels.add(webviewPanel);
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+    }
+    pending.timer = setTimeout(() => {
+      void this._openMdzGitDiff(key);
+    }, 25);
+    return true;
+  }
+
+  private async _openMdzGitDiff(key: string): Promise<void> {
+    const pending = this._pendingMdzGitDiffs.get(key);
+    if (!pending) {
+      return;
+    }
+    this._pendingMdzGitDiffs.delete(key);
+
+    for (const panel of pending.panels) {
+      panel.dispose();
+    }
+    for (const input of pending.inputs.values()) {
+      this._documentsByUri.delete(input.uri.toString());
+    }
+
+    const inputs = [...pending.inputs.values()];
+    const workingInput = inputs.find(input => input.ref === '');
+    const baseInput = inputs.find(input => input !== workingInput);
+    const onlyInput = inputs.length === 1 ? inputs[0] : undefined;
+
+    const beforeUri = onlyInput?.ref === ''
+      ? gitUriWithRef(onlyInput.uri, 'HEAD')
+      : baseInput?.uri ?? onlyInput?.uri;
+    const afterUri = workingInput?.uri ?? vscode.Uri.file(pending.filePath);
+    if (!beforeUri) {
+      return;
+    }
+
+    const [beforeBytes, afterBytes] = await Promise.all([
+      baseInput?.bytes ?? (onlyInput?.ref !== '' ? onlyInput?.bytes : readUriBytes(beforeUri)),
+      workingInput?.bytes ?? (onlyInput?.ref === '' ? onlyInput.bytes : readUriBytes(afterUri)),
+    ]);
+    const beforeRef = baseInput?.ref || (onlyInput?.ref !== '' ? onlyInput?.ref : 'HEAD') || 'HEAD';
+
+    try {
+      await MdzDiffPanel.open({
+        title: `${path.basename(pending.filePath)}: Archive Contents`,
+        resourceUri: vscode.Uri.file(pending.filePath),
+        before: {
+          label: beforeRef,
+          uri: beforeUri,
+          bytes: beforeBytes,
+          missingMessage: `The ${beforeRef} archive revision is not readable.`,
+        },
+        after: {
+          label: 'Working Tree',
+          uri: afterUri,
+          bytes: afterBytes,
+          missingMessage: 'The working-copy archive is not readable.',
+        },
+      }, this.context.extensionUri);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      vscode.window.showErrorMessage(`Unable to open the MDZip archive diff: ${message}`);
+    }
+  }
+
   private async _promptToConvertMarkdownForEmbeddedImage(
     document: MdzDocument,
     message: { archivePath: string; base64Data: string }
@@ -1201,9 +1406,53 @@ interface LayoutStateMessage {
 type EditorMode = 'preview' | 'edit';
 type LayoutMode = EditorMode | 'split';
 
+interface PendingMarkdownGitDiff {
+  filePath: string;
+  inputs: Map<string, { uri: vscode.Uri; ref: string }>;
+  panels: Set<vscode.WebviewPanel>;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+interface PendingMdzGitDiff {
+  filePath: string;
+  inputs: Map<string, { uri: vscode.Uri; ref: string; bytes: Uint8Array }>;
+  panels: Set<vscode.WebviewPanel>;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
+
+function parseGitInput(uri: vscode.Uri): { path: string; ref: string } | undefined {
+  try {
+    const query = JSON.parse(uri.query) as { path?: unknown; ref?: unknown };
+    if (typeof query.path !== 'string' || typeof query.ref !== 'string') {
+      return undefined;
+    }
+    return { path: query.path, ref: query.ref };
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeFileSystemPath(filePath: string): string {
+  const normalized = path.normalize(filePath);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function gitUriWithRef(uri: vscode.Uri, ref: string): vscode.Uri {
+  const query = JSON.parse(uri.query) as Record<string, unknown>;
+  return uri.with({ query: JSON.stringify({ ...query, ref }) });
+}
+
+async function readUriBytes(uri: vscode.Uri): Promise<Uint8Array | undefined> {
+  try {
+    return new Uint8Array(await vscode.workspace.fs.readFile(uri));
+  } catch {
+    return undefined;
+  }
+}
 
 function getNonce(): string {
   return require('crypto').randomBytes(16).toString('hex');

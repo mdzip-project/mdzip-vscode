@@ -143,6 +143,9 @@ export class MdzDocument implements vscode.CustomDocument {
   public async getSerializedWorkspace(): Promise<object> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const workspace = this._service.snapshot().workspace as any;
+    const orphanedAssets = this._sourceFormat === 'mdz'
+      ? await MdzArchiveCore.findOrphanedAssets(this.currentArchiveBytes())
+      : undefined;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const assets = await Promise.all((workspace.assets as any[]).map(async (asset: any) => {
       // Strip the JSZip-backed closure functions; keep all plain data fields (including
@@ -170,7 +173,12 @@ export class MdzDocument implements vscode.CustomDocument {
 
     // Spread the full workspace so undeclared fields (validation, orphanedAssets, etc.)
     // are preserved — openedArchiveFromWorkspace and getValidationStatus need them.
-    return { ...workspace, documents, assets: [...assets, ...diskAssets] };
+    return {
+      ...workspace,
+      documents,
+      assets: [...assets, ...diskAssets],
+      ...(orphanedAssets ? { orphanedAssets } : {}),
+    };
   }
 
   private async _loadRelativeDiskImages(markdown: string): Promise<object[]> {
