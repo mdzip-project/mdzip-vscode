@@ -1,5 +1,9 @@
 # Change Log
 
+## [1.3.17] - 2026-06-15
+### Fixed
+- Archive images no longer render as broken placeholders in the editor. The webview Content-Security-Policy now allows `blob:` image sources, which the editor library uses (via `URL.createObjectURL`) when resolving packaged assets.
+
 ## [1.3.14] - 2026-06-15
 ### Added
 - Interactive archive diff view: comparing `.mdz` archives now opens a status-aware navigation pane with read-only side-by-side text diffs and image or binary metadata comparisons, and the navigation pane can be hidden or restored with a familiar left-aligned panel icon.
