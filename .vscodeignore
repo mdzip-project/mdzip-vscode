@@ -5,9 +5,13 @@ src/**
 .gitignore
 AGENTS.md
 *AGENTS.md
+**/*AGENTS.md
+private/**
 .github/**
 tests/**
+.vscode-test.mjs
 tsconfig.json
+tsconfig.integration.json
 **/*.map
 *.vsix
 *.zip

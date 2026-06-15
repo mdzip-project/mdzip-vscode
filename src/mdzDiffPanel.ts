@@ -203,44 +203,11 @@ function buildDiffHtml(
       --mdzip-accent-color: var(--vscode-focusBorder);
       overflow: hidden;
     }
-    #mdzip-diff-toolbar {
-      box-sizing: border-box;
-      display: flex;
-      gap: 6px;
-      height: 36px;
-      padding: 4px 8px;
-    }
-    .mdzip-diff-toolbar-button {
-      background: var(--vscode-button-secondaryBackground);
-      border: 0;
-      color: var(--vscode-button-secondaryForeground);
-      cursor: pointer;
-      padding: 3px 10px;
-    }
-    .mdzip-diff-toolbar-button:hover {
-      background: var(--vscode-button-secondaryHoverBackground);
-    }
-    .mdzip-diff-toolbar-icon-button {
-      align-items: center;
-      background: transparent;
-      color: var(--vscode-foreground);
-      display: inline-flex;
-      justify-content: center;
-      margin-right: auto;
-      padding: 3px 6px;
-    }
-    .mdzip-diff-toolbar-icon-button[aria-pressed="true"] {
-      background: var(--vscode-toolbar-activeBackground);
-    }
-    .mdzip-diff-toolbar-icon-button svg {
-      height: 18px;
-      width: 18px;
-    }
     #mdzip-diff-loading {
       align-items: center;
       color: var(--vscode-descriptionForeground);
       display: flex;
-      height: calc(100% - 36px);
+      height: 100%;
       justify-content: center;
     }
     #mdzip-diff-loading[hidden],
@@ -248,19 +215,11 @@ function buildDiffHtml(
       display: none;
     }
     #mdzip-diff-root {
-      height: calc(100% - 36px);
+      height: 100%;
     }
   </style>
 </head>
 <body>
-  <div id="mdzip-diff-toolbar">
-    <button class="mdzip-diff-toolbar-button mdzip-diff-toolbar-icon-button"
-            id="mdzip-diff-toggle-navigation" type="button"
-            title="Hide archive navigation" aria-label="Hide archive navigation"
-            aria-pressed="true"></button>
-    <button class="mdzip-diff-toolbar-button" id="mdzip-diff-refresh"
-            type="button" title="Reload both archive revisions">Refresh</button>
-  </div>
   <div id="mdzip-diff-loading">Loading archive comparison...</div>
   <main id="mdzip-diff-root" hidden></main>
   <script nonce="${nonce}" src="${scriptUri}"></script>

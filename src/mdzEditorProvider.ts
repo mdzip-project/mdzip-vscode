@@ -1127,7 +1127,6 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       pending = {
         filePath: gitInput.path,
         inputs: new Map(),
-        panels: new Set(),
       };
       this._pendingMdzGitDiffs.set(key, pending);
     }
@@ -1137,7 +1136,8 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       ref: gitInput.ref,
       bytes: document.currentArchiveBytes(),
     });
-    pending.panels.add(webviewPanel);
+    webviewPanel.dispose();
+    this._documentsByUri.delete(document.uri.toString());
     if (pending.timer) {
       clearTimeout(pending.timer);
     }
@@ -1154,9 +1154,6 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     }
     this._pendingMdzGitDiffs.delete(key);
 
-    for (const panel of pending.panels) {
-      panel.dispose();
-    }
     for (const input of pending.inputs.values()) {
       this._documentsByUri.delete(input.uri.toString());
     }
@@ -1416,7 +1413,6 @@ interface PendingMarkdownGitDiff {
 interface PendingMdzGitDiff {
   filePath: string;
   inputs: Map<string, { uri: vscode.Uri; ref: string; bytes: Uint8Array }>;
-  panels: Set<vscode.WebviewPanel>;
   timer?: ReturnType<typeof setTimeout>;
 }
 

@@ -1,6 +1,5 @@
 import {
   MdzipDiffView,
-  navigationToggleIconHtml,
   type MdzipDiffViewOptions,
 } from '@mdzip/editor/diff-view';
 
@@ -25,31 +24,15 @@ declare const acquireVsCodeApi: () => VsCodeApi;
 
 const vscode = acquireVsCodeApi();
 const root = document.getElementById('mdzip-diff-root');
-const refreshButton = document.getElementById('mdzip-diff-refresh');
-const navigationButton = document.getElementById('mdzip-diff-toggle-navigation');
 const loading = document.getElementById('mdzip-diff-loading');
 
 if (!root) {
   throw new Error('MDZip diff root was not found.');
 }
 
-if (navigationButton) {
-  navigationButton.innerHTML = navigationToggleIconHtml('mdzip-diff-navigation-icon');
-}
-
-refreshButton?.addEventListener('click', () => {
-  vscode.postMessage({ type: 'refresh' });
-});
-
 let diffView: MdzipDiffView | null = null;
-let navigationVisible = true;
 let loadGeneration = 0;
-
-navigationButton?.addEventListener('click', () => {
-  navigationVisible = !navigationVisible;
-  diffView?.setNavigationVisible(navigationVisible);
-  updateNavigationButton();
-});
+let resolveRefresh: (() => void) | null = null;
 
 window.addEventListener('message', async (event: MessageEvent<LoadDiffMessage>) => {
   const message = event.data;
@@ -65,7 +48,13 @@ window.addEventListener('message', async (event: MessageEvent<LoadDiffMessage>) 
     before: toDiffSide(message.before),
     after: toDiffSide(message.after),
     showUnchanged: true,
-    navigationVisible,
+    navigationVisible: true,
+    toolbarActions: [{
+      id: 'refresh',
+      label: 'Refresh comparison',
+      icon: 'refresh',
+      run: refreshComparison,
+    }],
     onFailed(error) {
       vscode.postMessage({
         type: 'failed',
@@ -80,6 +69,8 @@ window.addEventListener('message', async (event: MessageEvent<LoadDiffMessage>) 
   }
   loading?.setAttribute('hidden', '');
   root.removeAttribute('hidden');
+  resolveRefresh?.();
+  resolveRefresh = null;
 });
 
 window.addEventListener('unload', () => {
@@ -89,16 +80,11 @@ window.addEventListener('unload', () => {
 
 vscode.postMessage({ type: 'ready' });
 
-function updateNavigationButton(): void {
-  if (!navigationButton) {
-    return;
-  }
-  const label = navigationVisible
-    ? 'Hide archive navigation'
-    : 'Show archive navigation';
-  navigationButton.title = label;
-  navigationButton.setAttribute('aria-label', label);
-  navigationButton.setAttribute('aria-pressed', String(navigationVisible));
+function refreshComparison(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    resolveRefresh = resolve;
+    vscode.postMessage({ type: 'refresh' });
+  });
 }
 
 function toDiffSide(side: DiffSideMessage): {
