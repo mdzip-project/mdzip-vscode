@@ -1,5 +1,12 @@
 # Change Log
 
+## [1.3.22] - 2026-06-16
+### Added
+- Added a sample MDZip document (`samples/mdzip-overview.mdz`) that explains the `.mdz` format and demonstrates a packaged banner image and two Mermaid diagrams, along with the `scripts/build-sample-mdz.mjs` generator used to produce it.
+
+### Changed
+- Upgraded to the published `@mdzip/editor` 1.3.11 npm package (`@mdzip/core-js` remains at 1.3.1, its latest published version).
+
 ## [1.3.17] - 2026-06-15
 ### Fixed
 - Archive images no longer render as broken placeholders in the editor. The webview Content-Security-Policy now allows `blob:` image sources, which the editor library uses (via `URL.createObjectURL`) when resolving packaged assets.
