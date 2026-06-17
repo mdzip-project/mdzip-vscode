@@ -5,6 +5,7 @@ import {
   type MdzipWorkspaceLayout,
   type MdzipWorkspaceSnapshot,
 } from '@mdzip/editor';
+import { mdzipMermaidExtension } from '@mdzip/editor/mermaid';
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
@@ -261,6 +262,10 @@ function createEditor(
     navigationButtonActive: false,
     initialLayout,
     initialColorScheme,
+    // Renders fenced ```mermaid blocks to inline SVG in the preview. The mermaid
+    // library is bundled into editor.bundle.js and loaded only when a document
+    // actually contains a mermaid block. Theme follows the editor color scheme.
+    markdownExtensions: [mdzipMermaidExtension()],
     onChanged: (bytes, snapshot) => {
       postSnapshot('workspaceChanged', bytes, snapshot);
     },
