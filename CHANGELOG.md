@@ -1,5 +1,13 @@
 # Change Log
 
+## [1.3.23] - 2026-06-23
+### Added
+- Pasting or dropping an image into the editor now opens a dialog to choose Markdown or HTML, alt text, sizing, and alignment instead of inserting a bare `![Pasted image](...)`. The HTML option uses portable `align` attributes so positioning survives the preview sanitizer.
+
+### Changed
+- Upgraded to the published `@mdzip/editor` 1.3.12 and `@mdzip/core-js` 1.3.2 npm packages.
+- Packaged images in the preview no longer replay their loading animation on every keystroke. The first-load reveal is preserved, but images now snap open on same-document edits (`imageHydrationAnimation: 'initial'`).
+
 ## [1.3.22] - 2026-06-16
 ### Added
 - Added a sample MDZip document (`samples/mdzip-overview.mdz`) that explains the `.mdz` format and demonstrates a packaged banner image and two Mermaid diagrams, along with the `scripts/build-sample-mdz.mjs` generator used to produce it.

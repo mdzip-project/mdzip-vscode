@@ -262,6 +262,15 @@ function createEditor(
     navigationButtonActive: false,
     initialLayout,
     initialColorScheme,
+    // Pasting/dropping an image opens the built-in dialog for Markdown vs HTML,
+    // alt text, sizing, and alignment instead of inserting a bare
+    // ![alt](path). The HTML path uses portable `align` attributes, which
+    // survive the preview sanitizer (it strips inline `style`).
+    imageInsertMode: 'ask',
+    // This is a live-editing host: the preview re-renders on every keystroke.
+    // 'initial' keeps the first-load reveal animation but snaps packaged images
+    // open on same-document edits, avoiding a loading pulse on each re-render.
+    imageHydrationAnimation: 'initial',
     // Renders fenced ```mermaid blocks to inline SVG in the preview. The mermaid
     // library is bundled into editor.bundle.js and loaded only when a document
     // actually contains a mermaid block. Theme follows the editor color scheme.
