@@ -1,5 +1,9 @@
 # Change Log
 
+## [1.3.24] - 2026-06-23
+### Changed
+- Maintenance release. No functional changes since 1.3.23; version bump and republished package.
+
 ## [1.3.23] - 2026-06-23
 ### Added
 - Pasting or dropping an image into the editor now opens a dialog to choose Markdown or HTML, alt text, sizing, and alignment instead of inserting a bare `![Pasted image](...)`. The HTML option uses portable `align` attributes so positioning survives the preview sanitizer.
