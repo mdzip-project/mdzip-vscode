@@ -7,6 +7,7 @@
 ### Changed
 - Upgraded to the published `@mdzip/editor` 1.3.12 and `@mdzip/core-js` 1.3.2 npm packages.
 - Packaged images in the preview no longer replay their loading animation on every keystroke. The first-load reveal is preserved, but images now snap open on same-document edits (`imageHydrationAnimation: 'initial'`).
+- Tightened the editor toolbar and content spacing to sit closer to VS Code's native density.
 
 ## [1.3.22] - 2026-06-16
 ### Added

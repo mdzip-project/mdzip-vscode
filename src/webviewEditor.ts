@@ -262,6 +262,10 @@ function createEditor(
     navigationButtonActive: false,
     initialLayout,
     initialColorScheme,
+    // Tighten the built-in toolbar and content spacing to sit closer to VS
+    // Code's native UI density. (contentDensity only supports comfortable/compact.)
+    toolbarDensity: 'dense',
+    contentDensity: 'compact',
     // Pasting/dropping an image opens the built-in dialog for Markdown vs HTML,
     // alt text, sizing, and alignment instead of inserting a bare
     // ![alt](path). The HTML path uses portable `align` attributes, which
