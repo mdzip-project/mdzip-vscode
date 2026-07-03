@@ -109,6 +109,38 @@ function requestDocumentText(path: string): Promise<string> {
   });
 }
 
+function normalizeLayout(value: unknown): MdzipWorkspaceLayout {
+  if (value === 'split' || value === 'source' || value === 'preview') {
+    return value;
+  }
+  // The host's legacy 'edit' mode maps to the library's 'source' layout.
+  if (value === 'edit') {
+    return 'source';
+  }
+  return 'preview';
+}
+
+// Reads the layout the user is currently looking at from the library's toolbar.
+// The library has no public layout getter and resets its internal layout to the
+// constructor's `initialLayout` on every openWorkspace(), so before a reload we
+// recover the live layout from the active toolbar button (marked with
+// aria-pressed="true" on a stable data-ref). Falls back to the last layout we
+// created the editor with when the toolbar isn't present.
+function readCurrentLayout(): MdzipWorkspaceLayout {
+  const refs: Array<[string, MdzipWorkspaceLayout]> = [
+    ['preview-btn', 'preview'],
+    ['split-btn', 'split'],
+    ['source-btn', 'source'],
+  ];
+  for (const [ref, layout] of refs) {
+    const btn = rootElement.querySelector(`[data-ref="${ref}"]`);
+    if (btn?.getAttribute('aria-pressed') === 'true') {
+      return layout;
+    }
+  }
+  return currentLayout;
+}
+
 window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | OpenWorkspaceDirectMessage | DocumentTextMessage>) => {
   const message = event.data;
   if (message?.type === 'documentText') {
@@ -124,8 +156,13 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
   }
 
   hasOpenedWorkspace = true;
-  const layout = message.layout ?? 'preview';
   const isFirst = !editor;
+  // The host's message.layout only reflects the *initial* layout — it never sees
+  // the user's in-toolbar layout toggles. So trust it for the first open, but on
+  // any re-send (notably an external-change reload) preserve the layout the user
+  // is actually viewing. Without this, the library's openWorkspace() reset would
+  // silently snap an edited/split view back to preview when a file changes on disk.
+  const layout = isFirst ? normalizeLayout(message.layout) : readCurrentLayout();
 
   if (!editor) {
     currentLayout = layout;

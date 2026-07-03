@@ -1,5 +1,15 @@
 # Change Log
 
+## [1.3.26] - 2026-07-02
+### Added
+- Right-click context menu in the editor pane: clipboard actions (cut/copy/paste, paste as plain text), inline and block formatting including a Heading submenu and a Code Block language submenu, highlight (`<mark>`), clear formatting, and select all.
+
+### Fixed
+- The editor no longer snaps back to preview-only when the underlying file changes on disk (e.g. an external tool or agent writes to an open `.md`/`.mdz`). The split/source layout you are viewing is now preserved across the external-change reload.
+
+### Changed
+- Upgraded to the published `@mdzip/editor` 1.3.13 npm package.
+
 ## [1.3.24] - 2026-06-23
 ### Changed
 - Maintenance release. No functional changes since 1.3.23; version bump and republished package.
