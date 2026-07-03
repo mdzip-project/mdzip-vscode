@@ -237,12 +237,21 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
     // Handle messages from the webview
     let convertSaveTimer: ReturnType<typeof setTimeout> | null = null;
-    let initialContentSend: Promise<void> | null = null;
-    const sendInitialContent = (): Promise<void> => {
-      if (!initialContentSend) {
-        initialContentSend = this._sendWorkspaceEditorContent(webviewPanel.webview, document);
+    // Build the payload once (expensive), but re-post it on every call. A
+    // postMessage sent before the webview's script has registered its
+    // message listener (e.g. resolveCustomEditor's eager first send, below)
+    // is silently dropped — the webview retries 'ready' every 250ms as a
+    // safety net, so each 'ready' must trigger a real re-send, not just
+    // await an already-resolved promise.
+    let initialContentPayload: Promise<OpenWorkspaceDirectMessage | undefined> | null = null;
+    const sendInitialContent = async (): Promise<void> => {
+      if (!initialContentPayload) {
+        initialContentPayload = this._buildWorkspaceEditorContentMessage(webviewPanel.webview, document);
       }
-      return initialContentSend;
+      const message = await initialContentPayload;
+      if (message) {
+        await webviewPanel.webview.postMessage(message);
+      }
     };
     webviewPanel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
       switch (message.type) {
@@ -607,11 +616,11 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     } satisfies LoadMessage);
   }
 
-  /** Send document content to the shared browser editor runtime. */
-  private async _sendWorkspaceEditorContent(
+  /** Build the message for the shared browser editor runtime, without sending it. */
+  private async _buildWorkspaceEditorContentMessage(
     webview: vscode.Webview,
     document: MdzDocument
-  ): Promise<void> {
+  ): Promise<OpenWorkspaceDirectMessage | undefined> {
     try {
       const fileName = path.posix.basename(document.uri.path);
       const layout = this._layoutModeForUri(document.uri, webview);
@@ -634,16 +643,28 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           ? Buffer.from(archiveBytes).toString('base64')
           : undefined;
 
-      await webview.postMessage({
+      return {
         type: 'openWorkspaceDirect',
         workspace: JSON.stringify(workspace),
         bytesBase64,
         sourceFormat: document.sourceFormat,
         fileName,
         layout,
-      } satisfies OpenWorkspaceDirectMessage);
+      } satisfies OpenWorkspaceDirectMessage;
     } catch (error) {
-      console.error('[MDZip] Failed to send workspace content:', error);
+      console.error('[MDZip] Failed to build workspace content:', error);
+      return undefined;
+    }
+  }
+
+  /** Send document content to the shared browser editor runtime. */
+  private async _sendWorkspaceEditorContent(
+    webview: vscode.Webview,
+    document: MdzDocument
+  ): Promise<void> {
+    const message = await this._buildWorkspaceEditorContentMessage(webview, document);
+    if (message) {
+      await webview.postMessage(message);
     }
   }
 

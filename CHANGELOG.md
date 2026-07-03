@@ -1,5 +1,9 @@
 # Change Log
 
+## [1.3.27] - 2026-07-03
+### Fixed
+- Fixed an intermittent bug where opening a `.md` or `.mdz` file (most often small ones) could leave the editor stuck on the "Loading…" screen. The extension host was sending the initial content to the webview before its script had finished loading and registered its message listener, and a retry-safety-net was silently swallowing the resend needed to recover.
+
 ## [1.3.26] - 2026-07-02
 ### Added
 - Right-click context menu in the editor pane: clipboard actions (cut/copy/paste, paste as plain text), inline and block formatting including a Heading submenu and a Code Block language submenu, highlight (`<mark>`), clear formatting, and select all.
@@ -9,10 +13,6 @@
 
 ### Changed
 - Upgraded to the published `@mdzip/editor` 1.3.13 npm package.
-
-## [1.3.24] - 2026-06-23
-### Changed
-- Maintenance release. No functional changes since 1.3.23; version bump and republished package.
 
 ## [1.3.23] - 2026-06-23
 ### Added
