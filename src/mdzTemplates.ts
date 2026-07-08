@@ -5,8 +5,10 @@ import {
   fileBaseNameFromPath,
   openMdzArchive,
   suggestedTitleFromMarkdown,
+  updateBinaryInArchive,
   updateManifestTitleInArchive,
   updateMarkdownInArchive,
+  type NewArchiveAsset,
 } from '@mdzip/editor';
 import { MdzEditorProvider } from './mdzEditorProvider';
 
@@ -106,7 +108,7 @@ export async function createMdzFromTemplate(
 
   const targetUri = vscode.Uri.joinPath(targetFolder, ensureMdzExtension(values.filename));
 
-  const bytes = await renderTemplateToMdzBytes(template, values);
+  const bytes = await renderTemplateToMdzBytes(context, template, values);
   if (!(await confirmOverwriteIfNeeded(targetUri))) {
     return;
   }
@@ -357,12 +359,13 @@ async function promptTemplateValues(
 }
 
 async function renderTemplateToMdzBytes(
+  context: vscode.ExtensionContext,
   template: TemplateDefinition,
   values: Record<string, string>
 ): Promise<Uint8Array> {
   if (template.kind === 'builtin') {
     const markdown = renderTemplateString(template.markdown || '', values);
-    return buildNewArchiveBytesWithTitle(markdown, values.title);
+    return buildNewArchiveBytesWithTitle(markdown, values.title, [await agentsMdAsset(context)]);
   }
 
   if (!template.uri) {
@@ -373,7 +376,7 @@ async function renderTemplateToMdzBytes(
     const source = TEXT_DECODER.decode(await vscode.workspace.fs.readFile(template.uri));
     const markdown = renderTemplateString(source, values);
     const title = suggestedTitleFromMarkdown(markdown, values.title);
-    return buildNewArchiveBytesWithTitle(markdown, title);
+    return buildNewArchiveBytesWithTitle(markdown, title, [await agentsMdAsset(context)]);
   }
 
   if (template.kind === 'mdz') {
@@ -386,13 +389,30 @@ async function renderTemplateToMdzBytes(
     } catch {
       // Templates without a manifest are still valid archives to clone.
     }
+    // Respect a template that already ships its own AGENTS.md; only add the
+    // default one if the cloned archive doesn't have one.
+    if (!archive.paths.some((entry) => entry.path.toLowerCase() === 'agents.md')) {
+      const asset = await agentsMdAsset(context);
+      bytes = await updateBinaryInArchive(bytes, asset.archivePath, asset.fileBytes);
+    }
     return bytes;
   }
 
-  return renderFolderTemplate(template.uri, values);
+  return renderFolderTemplate(context, template.uri, values);
+}
+
+/** The default `AGENTS.md` bundled into every newly created .mdz archive, telling
+ * agents without native MDZip support how to consume this file safely — in
+ * particular, to prefer the MDZip MCP server (for reads and writes, not just
+ * writes) over extracting the archive or hand-editing it with generic ZIP tools. */
+export async function agentsMdAsset(context: vscode.ExtensionContext): Promise<NewArchiveAsset> {
+  const uri = vscode.Uri.joinPath(context.extensionUri, 'media', 'templates', 'embedded-agent-guide.md');
+  const fileBytes = await vscode.workspace.fs.readFile(uri);
+  return { archivePath: 'AGENTS.md', fileBytes };
 }
 
 async function renderFolderTemplate(
+  context: vscode.ExtensionContext,
   folderUri: vscode.Uri,
   values: Record<string, string>
 ): Promise<Uint8Array> {
@@ -419,6 +439,11 @@ async function renderFolderTemplate(
       archivePath: renderTemplateString(normaliseArchivePath(file.relativePath), values),
       fileBytes: file.bytes,
     }));
+
+  // Respect a folder template that already ships its own AGENTS.md.
+  if (!assets.some((asset) => asset.archivePath.toLowerCase() === 'agents.md')) {
+    assets.push(await agentsMdAsset(context));
+  }
 
   return buildNewArchiveBytesWithTitle(markdown, title, assets);
 }

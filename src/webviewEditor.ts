@@ -295,6 +295,10 @@ function createEditor(
       navigation: isMdz,
       title: isMdz,
       orphanActions: isMdz,
+      // VS Code's webview host already provides find-in-page (Ctrl+F) over
+      // the rendered content, so the editor's own search button would be
+      // redundant here.
+      search: false,
     },
     navigationButtonActive: false,
     initialLayout,

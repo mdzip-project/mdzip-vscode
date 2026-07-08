@@ -1,8 +1,17 @@
 # Change Log
 
 ## [1.3.27] - 2026-07-03
+### Added
+- New `.mdz` files (built-in templates, markdown templates, folder templates, and cloned `.mdz` templates that don't already have their own) now include an `AGENTS.md` by default, guiding agents without native MDZip support toward the MDZip MCP server — for reads as well as writes — instead of manually extracting or editing the archive. Opens with a short human-readable note naming the MDZip VS Code extension as the source (useful if the archive is later opened somewhere else), the tradeoff of deleting it, and a "Guidance last updated" date so future updates to the guidance can eventually be detected in existing archives.
+- New "MDZip: Add AGENTS.md to Archive" command (command palette, explorer context menu, and editor title-bar toolbar icon for `.mdz` files) adds the same default `AGENTS.md` to an existing archive, or offers to replace it if one is already present. Prompts to save first if the archive has unsaved changes open in the editor.
+
+### Changed
+- Most MDZip commands are now available from the editor tab's "..." overflow menu when a `.md` or `.mdz` file is active, not just the Command Palette.
+
 ### Fixed
 - Fixed an intermittent bug where opening a `.md` or `.mdz` file (most often small ones) could leave the editor stuck on the "Loading…" screen. The extension host was sending the initial content to the webview before its script had finished loading and registered its message listener, and a retry-safety-net was silently swallowing the resend needed to recover.
+- The MDZip MCP server's `upsert_canonical_document` tool now requires an `expectedContentHash` (returned by `mdz_review_document`) and rejects the write with a `CONTENT_CONFLICT` error if the archive's canonical document changed since that read, instead of silently overwriting it.
+- Command Palette entries no longer show a duplicated "MDZip: MDZip: ..." prefix. The `category` field was producing that prefix on top of an already-prefixed title; removed `category` and kept the prefix on the title itself so it still shows correctly in context menus, which don't render `category` at all.
 
 ## [1.3.26] - 2026-07-02
 ### Added

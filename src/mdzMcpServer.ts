@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import { createHash } from 'crypto';
 import { MdzArchiveCore, MDZ_IMAGE_MIME_TYPES } from '@mdzip/core-js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -70,7 +71,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'mdz_review_document',
         description:
-          'Preferred first call for review/analyze/summarize requests on an .mdz file. Returns markdown text and referenced images plus canonical/entrypoint resolution metadata.',
+          'Preferred first call for review/analyze/summarize requests on an .mdz file. Returns markdown text and referenced images plus canonical/entrypoint resolution metadata, including canonicalContentHash — pass that back as expectedContentHash to upsert_canonical_document to guard against overwriting edits made elsewhere (e.g. in the VS Code editor) since this read.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -95,7 +96,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'upsert_canonical_document',
         description:
-          'Preferred write path for markdown updates. Updates manifest-first canonical markdown and returns changed paths plus post-write validation.',
+          'Preferred write path for markdown updates. Updates manifest-first canonical markdown and returns changed paths plus post-write validation. Requires expectedContentHash (from a prior mdz_review_document call) and fails with a CONTENT_CONFLICT error instead of overwriting if the on-disk canonical content has changed since that read.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -107,8 +108,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'New markdown content for the canonical entrypoint document.',
             },
+            expectedContentHash: {
+              type: 'string',
+              description:
+                'The canonicalContentHash returned by the most recent mdz_review_document call for this archive. The write is rejected with CONTENT_CONFLICT if the current on-disk hash no longer matches, which means the document changed since it was last read (e.g. saved from the VS Code editor).',
+            },
           },
-          required: ['archivePath', 'content'],
+          required: ['archivePath', 'content', 'expectedContentHash'],
         },
       },
       {
@@ -248,6 +254,16 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<ToolResult>
       }
 
       const markdown = await archive.readText(context.resolvedMarkdownPath);
+      // Hash of the *canonical* entrypoint specifically (not just whatever was
+      // requested) — this is what upsert_canonical_document actually writes to,
+      // so it's the value callers must round-trip as expectedContentHash.
+      const canonicalContentHash = context.canonicalEntrypointPath
+        ? hashText(
+            context.canonicalEntrypointPath === context.resolvedMarkdownPath
+              ? markdown
+              : await archive.readText(context.canonicalEntrypointPath)
+          )
+        : null;
       const maxImages = clampInteger(optionalNumberArg(args, 'maxImages') ?? 12, 1, 50);
       const referencedImages = await collectReferencedImages(
         archive,
@@ -272,6 +288,7 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<ToolResult>
               requestedEntryPath: context.requestedEntryPath,
               resolvedMarkdownPath: context.resolvedMarkdownPath,
               canonicalEntrypointPath: context.canonicalEntrypointPath,
+              canonicalContentHash,
               entrypointSource: context.entrypointSource,
               isCanonicalRead: context.isCanonicalRead,
               isAmbiguous: context.isAmbiguous,
@@ -304,10 +321,33 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<ToolResult>
     case 'upsert_canonical_document': {
       const archivePath = stringArg(args, 'archivePath');
       const content = stringArg(args, 'content');
+      const expectedContentHash = optionalStringArg(args, 'expectedContentHash');
 
       const bytes = await fs.readFile(archivePath);
       const archive = await MdzArchiveCore.open(bytes);
       const canonicalEntrypointPath = await resolveCanonicalEntrypointForWrite(archive);
+
+      // Optimistic-concurrency guard: refuse to overwrite if the on-disk
+      // canonical content no longer matches what the caller last read via
+      // mdz_review_document. Without this, a write here silently clobbers
+      // any edit made elsewhere (e.g. saved from the VS Code editor) between
+      // that read and this write.
+      const currentContent = await archive.readText(canonicalEntrypointPath);
+      const currentContentHash = hashText(currentContent);
+      if (!expectedContentHash) {
+        throw toolError(
+          'MISSING_EXPECTED_CONTENT_HASH',
+          'expectedContentHash is required to write the canonical document.',
+          `Call mdz_review_document to read the current canonical content, then retry upsert_canonical_document with expectedContentHash set to its canonicalContentHash (currently ${currentContentHash}).`
+        );
+      }
+      if (currentContentHash !== expectedContentHash) {
+        throw toolError(
+          'CONTENT_CONFLICT',
+          `The canonical document (${canonicalEntrypointPath}) has changed since it was last read. Expected content hash ${expectedContentHash}, found ${currentContentHash}.`,
+          'Call mdz_review_document to re-read the current canonical content, reconcile your intended change against it, then retry upsert_canonical_document with the new canonicalContentHash as expectedContentHash.'
+        );
+      }
 
       const mutation = await MdzArchiveCore.addFile(bytes, canonicalEntrypointPath, content);
       const nextBytes = new Uint8Array(await mutation.blob.arrayBuffer());
@@ -679,6 +719,10 @@ function optionalBooleanArg(args: ToolArgs, key: string): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
 }
 
+function hashText(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
 function clampInteger(value: number, min: number, max: number): number {
   const rounded = Math.round(value);
   if (rounded < min) {
@@ -835,6 +879,11 @@ async function rewriteMarkdownImagePathsToDataUrls(
   return rewritten;
 }
 
+// Raw HTML <img src> tags aren't part of the markdown image syntax above, but
+// authors use them for sizing/alignment control markdown can't express.
+const HTML_IMG_TAG_RE = /<img\b[^>]*\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))[^>]*>/gi;
+const HTML_IMG_ALT_RE = /\salt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
+
 async function collectReferencedImages(
   archive: MdzArchiveCore,
   markdownPath: string,
@@ -845,13 +894,22 @@ async function collectReferencedImages(
   const results: ReferencedImage[] = [];
   const seen = new Set<string>();
 
+  const candidates: Array<{ alt: string; rawTarget: string }> = [];
   for (const match of markdown.matchAll(imagePattern)) {
+    candidates.push({ alt: match[1] || '', rawTarget: (match[2] || '').trim() });
+  }
+  for (const match of markdown.matchAll(HTML_IMG_TAG_RE)) {
+    const rawTarget = (match[1] ?? match[2] ?? match[3] ?? '').trim();
+    const altMatch = HTML_IMG_ALT_RE.exec(match[0]);
+    const alt = altMatch ? (altMatch[1] ?? altMatch[2] ?? altMatch[3] ?? '') : '';
+    candidates.push({ alt, rawTarget });
+  }
+
+  for (const { alt, rawTarget } of candidates) {
     if (results.length >= maxImages) {
       break;
     }
 
-    const alt = match[1] || '';
-    const rawTarget = (match[2] || '').trim();
     if (!rawTarget || isExternalTarget(rawTarget)) {
       continue;
     }

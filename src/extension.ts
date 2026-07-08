@@ -7,14 +7,17 @@ import type { GitExtension } from './vendor/git';
 import { MdzEditorProvider } from './mdzEditorProvider';
 import { MdzDiffPanel } from './mdzDiffPanel';
 import {
+  agentsMdAsset,
   configureTemplateFolder,
   createMdzFromTemplate,
   openTemplatesFolder,
 } from './mdzTemplates';
 import {
   buildNewArchiveBytesWithTitle,
+  openMdzArchive,
   readCanonicalMarkdown,
   suggestedTitleFromMarkdown,
+  updateBinaryInArchive,
   isImagePath,
   MdzipWorkspaceService,
 } from '@mdzip/editor';
@@ -73,6 +76,56 @@ async function pickMdzFile(prompt: string): Promise<vscode.Uri | undefined> {
     title: prompt,
   });
   return result?.[0];
+}
+
+/** Resolve a target .mdz for a command: explicit resource arg, else the active
+ * .mdz tab, else a file picker. Shared by commands that act on "the" .mdz file
+ * the user means, whether invoked from the explorer, editor title bar, or
+ * command palette with nothing focused. */
+async function resolveMdzFileForCommand(
+  resource: unknown,
+  pickerTitle: string
+): Promise<vscode.Uri | undefined> {
+  let fileUri = resourceUriFromCommandArg(resource);
+
+  if (!fileUri) {
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        if (tab.isActive && tab.input instanceof vscode.TabInputCustom &&
+            tab.input.uri.path.toLowerCase().endsWith('.mdz')) {
+          fileUri = tab.input.uri;
+          break;
+        }
+      }
+      if (fileUri) { break; }
+    }
+  }
+
+  if (!fileUri) {
+    fileUri = await pickMdzFile(pickerTitle);
+    if (!fileUri) { return undefined; }
+  }
+
+  if (!fileUri.path.toLowerCase().endsWith('.mdz')) {
+    vscode.window.showWarningMessage('Select a .mdz file.');
+    return undefined;
+  }
+
+  return fileUri;
+}
+
+/** Whether this .mdz has unsaved edits in an open custom-editor tab. Custom
+ * editor documents never appear in `vscode.workspace.textDocuments`, so dirty
+ * state has to be read off the tab itself. */
+function isMdzUriDirtyInTab(uri: vscode.Uri): boolean {
+  for (const group of vscode.window.tabGroups.all) {
+    for (const tab of group.tabs) {
+      if (tab.input instanceof vscode.TabInputCustom && tab.input.uri.toString() === uri.toString()) {
+        return tab.isDirty;
+      }
+    }
+  }
+  return false;
 }
 
 async function getGitBaseBytes(fileUri: vscode.Uri): Promise<Buffer | undefined> {
@@ -798,30 +851,8 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mdzip.extractToFolder', async (resource?: unknown) => {
-      let fileUri = resourceUriFromCommandArg(resource);
-
-      if (!fileUri) {
-        for (const group of vscode.window.tabGroups.all) {
-          for (const tab of group.tabs) {
-            if (tab.isActive && tab.input instanceof vscode.TabInputCustom &&
-                tab.input.uri.path.toLowerCase().endsWith('.mdz')) {
-              fileUri = tab.input.uri;
-              break;
-            }
-          }
-          if (fileUri) { break; }
-        }
-      }
-
-      if (!fileUri) {
-        fileUri = await pickMdzFile('Select .mdz file to extract');
-        if (!fileUri) { return; }
-      }
-
-      if (!fileUri.path.toLowerCase().endsWith('.mdz')) {
-        vscode.window.showWarningMessage('Select a .mdz file to extract.');
-        return;
-      }
+      const fileUri = await resolveMdzFileForCommand(resource, 'Select .mdz file to extract');
+      if (!fileUri) { return; }
 
       const baseName = path.posix.basename(fileUri.path, '.mdz');
       const dirPath = path.posix.dirname(fileUri.path);
@@ -869,6 +900,46 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
       await vscode.commands.executeCommand('revealInExplorer', folderUri);
       vscode.window.showInformationMessage(
         `Extracted ${extracted} file${extracted === 1 ? '' : 's'} to ${baseName}_tmp/`
+      );
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.addAgentsGuide', async (resource?: unknown) => {
+      const fileUri = await resolveMdzFileForCommand(resource, 'Select .mdz file to add AGENTS.md to');
+      if (!fileUri) { return; }
+
+      if (isMdzUriDirtyInTab(fileUri)) {
+        const saveLabel = 'Save and Continue';
+        const selection = await vscode.window.showWarningMessage(
+          `${path.posix.basename(fileUri.path)} has unsaved changes. Save before adding AGENTS.md?`,
+          { modal: true },
+          saveLabel
+        );
+        if (selection !== saveLabel) { return; }
+        await vscode.commands.executeCommand('workbench.action.files.saveFiles', [fileUri]);
+      }
+
+      const bytes = await vscode.workspace.fs.readFile(fileUri);
+      const archive = await openMdzArchive(bytes);
+      const alreadyHasGuide = archive.paths.some((entry) => entry.path.toLowerCase() === 'agents.md');
+
+      if (alreadyHasGuide) {
+        const replaceLabel = 'Replace';
+        const selection = await vscode.window.showWarningMessage(
+          `${path.posix.basename(fileUri.path)} already has an AGENTS.md. Replace it with the current version?`,
+          { modal: true },
+          replaceLabel
+        );
+        if (selection !== replaceLabel) { return; }
+      }
+
+      const asset = await agentsMdAsset(context);
+      const nextBytes = await updateBinaryInArchive(bytes, asset.archivePath, asset.fileBytes);
+      await vscode.workspace.fs.writeFile(fileUri, nextBytes);
+
+      vscode.window.showInformationMessage(
+        `${alreadyHasGuide ? 'Replaced' : 'Added'} AGENTS.md in ${path.posix.basename(fileUri.path)}.`
       );
     })
   );

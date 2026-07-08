@@ -49,11 +49,13 @@ async function main() {
       await testArchiveTextSearch(client, fixtures.canonicalSingle);
       await testAmbiguousReadError(client, fixtures.ambiguousMultiMarkdown);
       await testCanonicalWriteSuccess(client, fixtures.canonicalSingle);
+      await testCanonicalWriteConflict(client, fixtures.canonicalSingle);
       await testCanonicalWriteMissingEntrypoint(client, fixtures.fallbackSingleMarkdown);
       await testCanonicalWriteAmbiguousEntrypoint(client, fixtures.ambiguousMultiMarkdown);
       await testCanonicalWriteNoMarkdownEntries(client, fixtures.noMarkdown);
       await testErrorPayloadConsistency(client, fixtures.canonicalSingle);
-      console.log('MCP smoke tests passed: T1, T2, T4, T5, T6, T7, T8, T9');
+      await testHtmlImgTagReferencedImages(client, fixtures.htmlImageOnly);
+      console.log('MCP smoke tests passed: T1, T2, T4, T5, T6, T7, T8, T9, T10, T-img');
     } finally {
       await client.close();
     }
@@ -80,12 +82,46 @@ async function createFixtures(fixtureRoot) {
   const noMarkdownBytes = await removeAllMarkdownAndEntrypoint(canonicalBytes);
   await fs.writeFile(noMarkdown, noMarkdownBytes);
 
+  const htmlImageOnly = path.join(fixtureRoot, 'html-image-only.mdz');
+  const htmlImageOnlyBytes = await buildHtmlImageOnlyArchive();
+  await fs.writeFile(htmlImageOnly, htmlImageOnlyBytes);
+
   return {
     canonicalSingle,
     fallbackSingleMarkdown,
     ambiguousMultiMarkdown,
     noMarkdown,
+    htmlImageOnly,
   };
+}
+
+async function buildHtmlImageOnlyArchive() {
+  const { MdzPackagerCore, MdzArchiveCore } = await getMdzipCore();
+  const result = await MdzPackagerCore.buildArchive(
+    [
+      {
+        path: 'index.md',
+        text: '# HTML image\n\n<img src="assets/diagram.png" width="200">\n',
+      },
+      { path: 'assets/diagram.png', bytes: new Uint8Array([1, 2, 3, 4]) },
+    ],
+    'document',
+    {
+      createIndex: false,
+      mapFiles: false,
+      filters: MdzPackagerCore.DEFAULT_FILTERS,
+      mode: 'document',
+      entryPoint: 'index.md',
+      title: 'html-image-only',
+    }
+  );
+
+  const bytes = Buffer.from(await result.blob.arrayBuffer());
+  // Sanity check the fixture itself carries the asset before it's used to
+  // exercise the MCP tool.
+  const archive = await MdzArchiveCore.open(bytes);
+  assert.ok(archive.hasEntry('assets/diagram.png'), 'fixture should include the image asset');
+  return bytes;
 }
 
 async function buildCanonicalArchive(markdown) {
@@ -155,6 +191,8 @@ async function testCanonicalManifestRead(client, archivePath) {
   assert.equal(metadata.isCanonicalRead, true);
   assert.equal(metadata.isAmbiguous, false);
   assert.equal(metadata.resolvedMarkdownPath, metadata.canonicalEntrypointPath);
+  assert.equal(typeof metadata.canonicalContentHash, 'string');
+  assert.ok(metadata.canonicalContentHash.length > 0, 'canonicalContentHash should be non-empty');
   assert.ok(
     String(metadata.recommendedNextAction || '').includes('upsert_canonical_document'),
     'recommendedNextAction should mention upsert_canonical_document'
@@ -210,11 +248,19 @@ async function testArchiveTextSearch(client, archivePath) {
 async function testCanonicalWriteSuccess(client, canonicalArchivePath) {
   const nextMarkdown = '# Canonical\n\nUpdated by smoke test.\n';
 
+  const preRead = await client.callTool({
+    name: 'mdz_review_document',
+    arguments: { archivePath: canonicalArchivePath },
+  });
+  assert.ok(!preRead.isError);
+  const { canonicalContentHash } = parseFirstTextJson(preRead);
+
   const writeResult = await client.callTool({
     name: 'upsert_canonical_document',
     arguments: {
       archivePath: canonicalArchivePath,
       content: nextMarkdown,
+      expectedContentHash: canonicalContentHash,
     },
   });
 
@@ -235,6 +281,67 @@ async function testCanonicalWriteSuccess(client, canonicalArchivePath) {
     allText.some((value) => value.includes('Updated by smoke test.')),
     'updated markdown must be readable after canonical write'
   );
+}
+
+async function testCanonicalWriteConflict(client, canonicalArchivePath) {
+  const preRead = await client.callTool({
+    name: 'mdz_review_document',
+    arguments: { archivePath: canonicalArchivePath },
+  });
+  assert.ok(!preRead.isError);
+  const { canonicalContentHash: staleHash } = parseFirstTextJson(preRead);
+
+  // Simulate an edit landing from elsewhere (e.g. the VS Code editor) between
+  // the read above and the write below.
+  const outOfBand = await client.callTool({
+    name: 'upsert_canonical_document',
+    arguments: {
+      archivePath: canonicalArchivePath,
+      content: '# Canonical\n\nChanged out of band.\n',
+      expectedContentHash: staleHash,
+    },
+  });
+  assert.ok(!outOfBand.isError, 'setup write for conflict test should succeed');
+
+  const staleWrite = await client.callTool({
+    name: 'upsert_canonical_document',
+    arguments: {
+      archivePath: canonicalArchivePath,
+      content: '# Canonical\n\nThis should not land.\n',
+      expectedContentHash: staleHash,
+    },
+  });
+
+  assert.equal(staleWrite.isError, true, 'write with a stale content hash must be rejected');
+  const payload = parseErrorPayload(staleWrite);
+  assert.equal(payload.code, 'CONTENT_CONFLICT');
+  assert.ok(String(payload.nextAction || '').includes('mdz_review_document'));
+
+  const reread = await client.callTool({
+    name: 'mdz_review_document',
+    arguments: { archivePath: canonicalArchivePath },
+  });
+  assert.ok(!reread.isError);
+  const allText = extractAllTextContent(reread);
+  assert.ok(
+    allText.some((value) => value.includes('Changed out of band.')),
+    'out-of-band content must survive a rejected stale write'
+  );
+  assert.ok(
+    !allText.some((value) => value.includes('This should not land.')),
+    'rejected write must not be applied'
+  );
+
+  const missingHash = await client.callTool({
+    name: 'upsert_canonical_document',
+    arguments: {
+      archivePath: canonicalArchivePath,
+      content: '# Canonical\n\nNo hash supplied.\n',
+    },
+  });
+  assert.equal(missingHash.isError, true, 'write without expectedContentHash must be rejected');
+  const missingHashPayload = parseErrorPayload(missingHash);
+  assert.equal(missingHashPayload.code, 'MISSING_EXPECTED_CONTENT_HASH');
 }
 
 async function testCanonicalWriteMissingEntrypoint(client, archivePath) {
@@ -316,6 +423,23 @@ async function testErrorPayloadConsistency(client, archivePath) {
   });
   assert.equal(invalidRequestedPath.isError, true);
   assertHasStandardErrorShape(parseErrorPayload(invalidRequestedPath));
+}
+
+async function testHtmlImgTagReferencedImages(client, archivePath) {
+  const result = await client.callTool({
+    name: 'mdz_review_document',
+    arguments: { archivePath },
+  });
+
+  assert.ok(!result.isError, 'mdz_review_document should succeed for the html-image-only fixture');
+  const payload = parseFirstTextJson(result);
+
+  assert.equal(
+    payload.imageCount,
+    1,
+    'an image referenced only via a raw HTML <img> tag should still be picked up'
+  );
+  assert.equal(payload.images[0].path, 'assets/diagram.png');
 }
 
 function parseFirstTextJson(result) {
