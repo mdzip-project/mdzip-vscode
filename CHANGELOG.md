@@ -1,5 +1,11 @@
 # Change Log
 
+## [1.3.28] - 2026-07-08
+### Changed
+- Upgraded to the published `@mdzip/editor` 1.3.15 and `@mdzip/core-js` 1.3.3 npm packages (replacing local source links). The editor upgrade brings the preview fixes from 1.3.14/1.3.15: raw HTML tag muting in the source pane, image layout attributes for raw HTML `<img>`, table alignment fixes, and contained Mermaid error rendering.
+
+> Note: version 1.3.27 was prepared but never published — everything listed under it below first reached the Marketplace as part of 1.3.28.
+
 ## [1.3.27] - 2026-07-03
 ### Added
 - New `.mdz` files (built-in templates, markdown templates, folder templates, and cloned `.mdz` templates that don't already have their own) now include an `AGENTS.md` by default, guiding agents without native MDZip support toward the MDZip MCP server — for reads as well as writes — instead of manually extracting or editing the archive. Opens with a short human-readable note naming the MDZip VS Code extension as the source (useful if the archive is later opened somewhere else), the tradeoff of deleting it, and a "Guidance last updated" date so future updates to the guidance can eventually be detected in existing archives.
