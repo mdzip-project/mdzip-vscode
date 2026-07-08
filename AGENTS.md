@@ -6,3 +6,4 @@
 - Documentation, design notes, and other non-code/non-asset changes do not require an automatic version bump or VSIX rebuild.
 - Use `npm version patch --no-git-tag-version` for the version bump unless the user asks for a different version.
 - Use `npx vsce package` to rebuild the VSIX after verification.
+- The release/publish checklist lives in `private/Publish.mdz` (local-only, gitignored). Read/edit it via the MDZip MCP server. Finalize the CHANGELOG entry for a release **before** packaging the VSIX — the Marketplace renders the CHANGELOG.md bundled inside it.
