@@ -82,7 +82,6 @@
       {
         "command": "mdzip.newFile",
         "title": "MDZip: New .mdz file...",
-        "category": "MDZip",
         "icon": {
           "light": "media/icons/mdzip-explorer-icon.svg",
           "dark": "media/icons/mdzip-explorer-icon.svg"
@@ -90,18 +89,15 @@
       },
       {
         "command": "mdzip.configureTemplateFolder",
-        "title": "MDZip: Configure Template Folder",
-        "category": "MDZip"
+        "title": "MDZip: Configure Template Folder"
       },
       {
         "command": "mdzip.openTemplatesFolder",
-        "title": "MDZip: Open Templates Folder",
-        "category": "MDZip"
+        "title": "MDZip: Open Templates Folder"
       },
       {
         "command": "mdzip.convertMarkdownToMdz",
         "title": "MDZip: Convert .md To .mdz",
-        "category": "MDZip",
         "icon": {
           "light": "media/icons/mdzip-explorer-icon.svg",
           "dark": "media/icons/mdzip-explorer-icon.svg"
@@ -109,73 +105,67 @@
       },
       {
         "command": "mdzip.compareMarkdown",
-        "title": "MDZip: Compare Markdown",
-        "category": "MDZip"
+        "title": "MDZip: Compare Markdown"
       },
       {
         "command": "mdzip.compareWithGitBase",
-        "title": "MDZip: Compare Document Markdown with Git Base",
-        "category": "MDZip"
+        "title": "MDZip: Compare Document Markdown with Git Base"
       },
       {
         "command": "mdzip.compareArchiveWithGitBase",
-        "title": "MDZip: Compare Archive Contents with Git Base",
-        "category": "MDZip"
+        "title": "MDZip: Compare Archive Contents with Git Base"
       },
       {
         "command": "mdzip.copyMcpConfigSnippet",
-        "title": "MDZip: Copy MCP Server Config Snippet",
-        "category": "MDZip"
+        "title": "MDZip: Copy MCP Server Config Snippet"
       },
       {
         "command": "mdzip.enableWorkspaceMcp",
-        "title": "MDZip: Enable Workspace MCP Server",
-        "category": "MDZip"
+        "title": "MDZip: Enable Workspace MCP Server"
       },
       {
         "command": "mdzip.enableUserMcp",
-        "title": "MDZip: Enable User MCP Server",
-        "category": "MDZip"
+        "title": "MDZip: Enable User MCP Server"
       },
       {
         "command": "mdzip.enableCodexMcp",
-        "title": "MDZip: Enable Codex MCP Server",
-        "category": "MDZip"
+        "title": "MDZip: Enable Codex MCP Server"
       },
       {
         "command": "mdzip.openGettingStarted",
-        "title": "MDZip: Open Getting Started",
-        "category": "MDZip"
+        "title": "MDZip: Open Getting Started"
       },
       {
         "command": "mdzip.openMcpServerStatus",
-        "title": "MDZip: Open MCP Server Status",
-        "category": "MDZip"
+        "title": "MDZip: Open MCP Server Status"
       },
       {
         "command": "mdzip.openExtensionHelp",
-        "title": "MDZip: Open Extension Help",
-        "category": "MDZip"
+        "title": "MDZip: Open Extension Help"
       },
       {
         "command": "mdzip.openDocumentation",
-        "title": "MDZip: Open Documentation",
-        "category": "MDZip"
+        "title": "MDZip: Open Documentation"
       },
       {
         "command": "mdzip.openWebsite",
-        "title": "MDZip: Visit mdzip.org",
-        "category": "MDZip"
+        "title": "MDZip: Visit mdzip.org"
       },
       {
         "command": "mdzip.enableWorkspaceAgentInstructions",
-        "title": "MDZip: Enable Workspace Agent Instructions",
-        "category": "MDZip"
+        "title": "MDZip: Enable Workspace Agent Instructions"
       },
       {
         "command": "mdzip.extractToFolder",
-        "title": "MDZip: Extract to Folder",
-        "category": "MDZip"
+        "title": "MDZip: Extract to Folder"
+      },
+      {
+        "command": "mdzip.addAgentsGuide",
+        "title": "MDZip: Add AGENTS.md to Archive",
+        "icon": {
+          "light": "media/icons/mdzip-explorer-icon.svg",
+          "dark": "media/icons/mdzip-explorer-icon.svg"
+        }
       }
     ],
     "configuration": {
@@ -251,6 +241,9 @@
         },
         {
           "command": "mdzip.extractToFolder"
+        },
+        {
+          "command": "mdzip.addAgentsGuide"
         }
       ],
       "explorer/context": [
@@ -283,12 +276,22 @@
           "command": "mdzip.extractToFolder",
           "when": "resourceExtname == .mdz",
           "group": "navigation@15"
+        },
+        {
+          "command": "mdzip.addAgentsGuide",
+          "when": "resourceExtname == .mdz",
+          "group": "navigation@16"
         }
       ],
       "editor/title": [
         {
           "command": "mdzip.convertMarkdownToMdz",
           "when": "resourceExtname == .md",
+          "group": "navigation"
+        },
+        {
+          "command": "mdzip.addAgentsGuide",
+          "when": "resourceExtname == .mdz",
           "group": "navigation"
         }
       ],
@@ -312,6 +315,50 @@
         {
           "command": "mdzip.extractToFolder",
           "when": "resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.addAgentsGuide",
+          "when": "resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.copyMcpConfigSnippet",
+          "when": "resourceExtname == .md || resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.enableWorkspaceMcp",
+          "when": "resourceExtname == .md || resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.enableUserMcp",
+          "when": "resourceExtname == .md || resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.enableCodexMcp",
+          "when": "resourceExtname == .md || resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.openMcpServerStatus",
+          "when": "resourceExtname == .md || resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.enableWorkspaceAgentInstructions",
+          "when": "resourceExtname == .md || resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.openGettingStarted",
+          "when": "resourceExtname == .md || resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.openExtensionHelp",
+          "when": "resourceExtname == .md || resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.openDocumentation",
+          "when": "resourceExtname == .md || resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.openWebsite",
+          "when": "resourceExtname == .md || resourceExtname == .mdz"
         }
       ],
       "scm/resourceState/context": [
@@ -438,8 +485,8 @@
     "vsce": "^2.15.0"
   },
   "dependencies": {
-    "@mdzip/core-js": "^1.3.2",
-    "@mdzip/editor": "^1.3.13",
+    "@mdzip/core-js": "^1.3.3",
+    "@mdzip/editor": "^1.3.15",
     "@modelcontextprotocol/sdk": "^1.17.4",
     "jsdom": "^29.1.1",
     "marked": "^15.0.12",
