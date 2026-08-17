@@ -6,6 +6,7 @@ import { execFile } from 'child_process';
 import type { GitExtension } from './vendor/git';
 import { MdzEditorProvider } from './mdzEditorProvider';
 import { MdzDiffPanel } from './mdzDiffPanel';
+import { initLogging, logInfo, logError } from './mdzLog';
 import {
   agentsMdAsset,
   configureTemplateFolder,
@@ -27,45 +28,6 @@ const BUNDLED_MCP_SERVER_KEY = 'MDZip';
 const LEGACY_BUNDLED_MCP_SERVER_KEY = 'mdzip';
 const MCP_LAUNCHER_FILENAME = 'mdzip-mcp-launcher.cjs';
 const MDZIP_EXTENSION_PACKAGE_NAME = 'mdzip-project.mdzip-vscode';
-let mdzipOutputChannel: vscode.OutputChannel | undefined;
-
-function logInfo(message: string, ...details: unknown[]): void {
-  const line = formatLogLine('INFO', message, details);
-  mdzipOutputChannel?.appendLine(line);
-  console.log(`[MDZip] ${message}`, ...details);
-}
-
-function logError(message: string, error?: unknown): void {
-  const details = error === undefined ? [] : [formatError(error)];
-  mdzipOutputChannel?.appendLine(formatLogLine('ERROR', message, details));
-  console.error(`[MDZip] ${message}`, error);
-}
-
-function formatLogLine(level: 'INFO' | 'ERROR', message: string, details: readonly unknown[]): string {
-  const suffix = details.length > 0 ? ` ${details.map(formatLogDetail).join(' ')}` : '';
-  return `${new Date().toISOString()} [${level}] ${message}${suffix}`;
-}
-
-function formatLogDetail(detail: unknown): string {
-  if (typeof detail === 'string') {
-    return detail;
-  }
-  if (detail instanceof Error) {
-    return formatError(detail);
-  }
-  try {
-    return JSON.stringify(detail);
-  } catch {
-    return String(detail);
-  }
-}
-
-function formatError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.stack ?? error.message;
-  }
-  return String(error);
-}
 
 async function pickMdzFile(prompt: string): Promise<vscode.Uri | undefined> {
   const result = await vscode.window.showOpenDialog({
@@ -244,8 +206,7 @@ export interface MdzipTestApi {
 
 export function activate(context: vscode.ExtensionContext): MdzipTestApi {
   const version = context.extension.packageJSON.version;
-  mdzipOutputChannel = vscode.window.createOutputChannel('MDZip');
-  context.subscriptions.push(mdzipOutputChannel);
+  initLogging(context);
   logInfo(`Activating extension version ${version}`);
 
   context.subscriptions.push(MdzEditorProvider.register(context));

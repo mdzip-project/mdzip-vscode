@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { promises as fsPromises } from 'fs';
 import {
   buildNewArchiveWithTitle,
   fileBaseNameFromPath,
@@ -10,6 +11,7 @@ import {
   inferMdzipSourceFormat,
 } from '@mdzip/editor';
 import { MdzArchiveCore } from '@mdzip/core-js';
+import { logInfo, logError } from './mdzLog';
 
 /**
  * Represents an open .mdz document.
@@ -34,14 +36,62 @@ export class MdzDocument implements vscode.CustomDocument {
   private _latestWebviewBytes: Uint8Array | undefined;
   private _convertedToMdz = false;
   public readonly isNewDocument: boolean;
+  private _readOnly: boolean;
 
-  private constructor(uri: vscode.Uri, service: MdzipWorkspaceService, sourceFormat: 'mdz' | 'markdown', isNewDocument = false) {
+  private constructor(
+    uri: vscode.Uri,
+    service: MdzipWorkspaceService,
+    sourceFormat: 'mdz' | 'markdown',
+    isNewDocument = false,
+    readOnly = false
+  ) {
     this.uri = uri;
     this._service = service;
     this._sourceFormat = sourceFormat;
     this.isNewDocument = isNewDocument;
+    this._readOnly = readOnly;
     this._watcher = this._createExternalChangeWatcher(uri);
     this._subscribeToServiceChanges();
+  }
+
+  /**
+   * Whether the file on disk was read-only (OS permission bit) as of the last
+   * check — checked at open and refreshed on every external-change reload, so
+   * clearing the attribute while the document stays open is picked up without
+   * a full re-open. The webview uses this to open in the library's built-in
+   * `mode: 'read-only'` (disables editing, save/title buttons, drag — see
+   * MdzipWorkspaceView) instead of silently accepting edits that fail with a
+   * raw EPERM only at save time.
+   */
+  public get readOnly(): boolean {
+    return this._readOnly;
+  }
+
+  /**
+   * Re-stat the file's read-only bit. Swallows stat failures and non-`file:`
+   * schemes (treated as writable — matches prior behavior).
+   *
+   * Uses Node's own `fs.stat()` on `uri.fsPath`, not `vscode.workspace.fs.stat()`
+   * — confirmed via a real extension host log that the latter's `.permissions`
+   * comes back `undefined` for a genuinely read-only local file on this vscode
+   * build, while Node's `fs.stat().mode` correctly reflects the Windows
+   * read-only attribute (write bit cleared) for the same file. For remote/WSL/
+   * container workspaces this still resolves correctly since the extension
+   * host process itself runs on that same remote side as `uri.fsPath`.
+   */
+  private static async _statReadOnly(uri: vscode.Uri): Promise<boolean> {
+    if (uri.scheme !== 'file') {
+      return false;
+    }
+    try {
+      const stat = await fsPromises.stat(uri.fsPath);
+      const result = (stat.mode & 0o200) === 0;
+      logInfo(`statReadOnly(${uri.fsPath}): mode=${(stat.mode & 0o777).toString(8)} -> ${result}`);
+      return result;
+    } catch (error) {
+      logError(`statReadOnly(${uri.fsPath}) threw`, error);
+      return false;
+    }
   }
 
   private _subscribeToServiceChanges(): void {
@@ -56,6 +106,7 @@ export class MdzDocument implements vscode.CustomDocument {
   /** Factory — reads the file from disk and parses the archive. */
   public static async create(uri: vscode.Uri): Promise<MdzDocument> {
     const bytes = await vscode.workspace.fs.readFile(uri);
+    const readOnly = await MdzDocument._statReadOnly(uri);
 
     if (uri.path.toLowerCase().endsWith('.md')) {
       // For plain .md files, pass them directly without wrapping in an archive
@@ -63,7 +114,7 @@ export class MdzDocument implements vscode.CustomDocument {
         sourceFormat: 'markdown',
         fileName: uri.path,
       });
-      const doc = new MdzDocument(uri, service, 'markdown', bytes.byteLength === 0);
+      const doc = new MdzDocument(uri, service, 'markdown', bytes.byteLength === 0, readOnly);
       return doc;
     }
 
@@ -77,7 +128,7 @@ export class MdzDocument implements vscode.CustomDocument {
         sourceFormat: 'mdz',
         fileName: uri.path,
       });
-      const doc = new MdzDocument(uri, service, 'mdz', true);
+      const doc = new MdzDocument(uri, service, 'mdz', true, readOnly);
       return doc;
     }
 
@@ -87,7 +138,7 @@ export class MdzDocument implements vscode.CustomDocument {
       fileName: uri.path,
     });
     service.markPersisted();
-    const doc = new MdzDocument(uri, service, sourceFormat);
+    const doc = new MdzDocument(uri, service, sourceFormat, false, readOnly);
     return doc;
   }
 
@@ -301,6 +352,9 @@ export class MdzDocument implements vscode.CustomDocument {
       this._service.markPersisted();
       this._userDirty = false;
       this._suppressNextReload = true;
+      // The write above only succeeds if the file is currently writable —
+      // cheaper and more current than a separate stat() call.
+      this._readOnly = false;
     }
   }
 
@@ -315,6 +369,7 @@ export class MdzDocument implements vscode.CustomDocument {
     this._latestWebviewBytes = undefined;
     this._userDirty = false;
     this._convertedToMdz = false;
+    this._readOnly = await MdzDocument._statReadOnly(this.uri);
     this._subscribeToServiceChanges();
     this._onDidChange.fire({ reason: 'reload' });
   }
@@ -335,6 +390,7 @@ export class MdzDocument implements vscode.CustomDocument {
       sourceFormat,
       fileName: this.uri.path,
     });
+    this._readOnly = await MdzDocument._statReadOnly(this.uri);
     this._subscribeToServiceChanges();
     this._onDidChange.fire({ reason: 'reload' });
     return true;

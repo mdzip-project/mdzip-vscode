@@ -24,10 +24,16 @@ interface OpenWorkspaceMessage {
 interface OpenWorkspaceDirectMessage {
   type: 'openWorkspaceDirect';
   workspace: string; // JSON-serialized workspace; assets have a pre-resolved dataUri field
-  bytesBase64?: string; // raw archive bytes for incremental patching (small archives only)
+  // Raw archive bytes for incremental patching, as a bare ArrayBuffer — only
+  // an ArrayBuffer (not a Uint8Array/TypedArray, not base64 text) gets
+  // vscode's efficient, correctly-recreated postMessage transfer. See the
+  // matching comment in mdzEditorProvider.ts.
+  archiveBytes?: ArrayBuffer;
   sourceFormat: MdzipSourceFormat;
   fileName: string;
   layout?: MdzipWorkspaceLayout;
+  // See the matching comment in mdzEditorProvider.ts's OpenWorkspaceDirectMessage.
+  readOnly: boolean;
 }
 
 interface DocumentTextMessage {
@@ -48,6 +54,25 @@ let currentLayout: MdzipWorkspaceLayout = 'preview';
 let currentSourceFormat: MdzipSourceFormat = 'mdz';
 let editor: MdzipWorkspaceView | null = null;
 let hasOpenedWorkspace = false;
+
+// Off-main-thread archive parsing: the host (mdzEditorProvider.ts) injects the
+// webview-resource URL of the pre-bundled mdz-archive.worker.js as a global
+// before this script loads. One Worker per editor instance — created
+// alongside it below, reused across every open()/openWorkspace() call on that
+// instance (including reloads), and left to the editor's destroy() to
+// terminate. Falls back to undefined (main-thread parsing) if the URL wasn't
+// injected or the environment blocks Worker construction.
+function createArchiveWorker(): Worker | undefined {
+  const url = (window as unknown as { __MDZIP_WORKER_URL__?: string }).__MDZIP_WORKER_URL__;
+  if (!url) { return undefined; }
+  try {
+    return new Worker(url, { type: 'module' });
+  } catch (error) {
+    console.error('[MDZip webview] Failed to start the archive worker; falling back to main-thread parsing.', error);
+    return undefined;
+  }
+}
+let currentWorker: Worker | undefined;
 
 // Maps relative asset paths to data URIs for disk-sourced images (plain .md files).
 // Populated on each openWorkspaceDirect; the single error listener reads it at fire time.
@@ -168,12 +193,15 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
     currentLayout = layout;
     currentSourceFormat = message.sourceFormat;
     editor = createEditor(currentLayout, currentSourceFormat, detectColorScheme());
+    currentWorker = createArchiveWorker();
   } else if (layout !== currentLayout || message.sourceFormat !== currentSourceFormat) {
     editor.destroy();
     rootElement.replaceChildren();
     currentLayout = layout;
     currentSourceFormat = message.sourceFormat;
     editor = createEditor(currentLayout, currentSourceFormat, detectColorScheme());
+    // destroy() above terminates the worker paired with the old editor instance.
+    currentWorker = createArchiveWorker();
   }
 
   if (message.type === 'openWorkspaceDirect') {
@@ -209,7 +237,13 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
       fileName: message.fileName,
       // When present, asset/manifest edits patch these bytes incrementally
       // instead of rebuilding the ZIP from the workspace.
-      archiveBytes: message.bytesBase64 ? base64ToBytes(message.bytesBase64) : undefined,
+      archiveBytes: message.archiveBytes ? new Uint8Array(message.archiveBytes) : undefined,
+      worker: currentWorker,
+      // Read-only files on disk (checked via fs.stat's permission bit — see
+      // MdzDocument.readOnly) open the library's built-in read-only mode:
+      // disables the CodeMirror editor, save/title buttons, drag, etc.,
+      // instead of accepting edits that only fail with EPERM at save time.
+      mode: message.readOnly ? 'read-only' : 'editable',
     });
     if (isFirst) {
       void openPromise.finally(() => { loadingEl?.remove(); });
@@ -220,6 +254,7 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
   const openPromise = editor.open(base64ToBytes(message.bytesBase64), {
     sourceFormat: message.sourceFormat,
     fileName: message.fileName,
+    worker: currentWorker,
   });
   if (isFirst) {
     void openPromise.finally(() => { loadingEl?.remove(); });
@@ -320,6 +355,12 @@ function createEditor(
     // library is bundled into editor.bundle.js and loaded only when a document
     // actually contains a mermaid block. Theme follows the editor color scheme.
     markdownExtensions: [mdzipMermaidExtension()],
+    // Without this, marked+DOMPurify render the whole document synchronously
+    // before anything is mounted — on a large chat-export-style .mdz (thousands
+    // of message rows/images) that blocks the webview's thread for seconds and
+    // can trip VS Code's "window is not responding" prompt. Chunks the render
+    // near the viewport instead (verified against a real 39MB/15K-image export).
+    progressiveTextRendering: true,
     onChanged: (bytes, snapshot) => {
       postSnapshot('workspaceChanged', bytes, snapshot);
     },

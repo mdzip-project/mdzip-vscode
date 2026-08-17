@@ -1,5 +1,77 @@
 # Change Log
 
+## [1.3.42] - unreleased (local test build)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release. Another `@mdzip/editor` library change (`packages/editor/src/view.ts`), applies to `mdzip.org` and Studio too once they update.
+### Added
+- The "Document Information" dialog also shows **Size**, **Documents**, and **Assets** counts now. Documents/Assets are "Not applicable" for plain Markdown (matching the existing Entry point convention), since those concepts only exist for `.mdz` packages.
+- Caught and fixed a real bug before shipping it, via an actual jsdom render rather than just typechecking: for plain Markdown, `snapshot.archiveBytes` is *not* the file's real bytes — it's some internally-wrapped representation with its own fixed overhead (a 5-byte markdown document reported as a 462-byte "archive"). Size now uses the encoded text length for Markdown and the real archive bytes for `.mdz`, where `archiveBytes` genuinely is what a save would write.
+- Added 5 new tests in `metadata-dialog.test.mjs` (Size correctness for both formats including the archiveBytes-mismatch regression, Documents/Assets counts and their "Not applicable" case). Editor suite: 241+29 passing (was 236+29 before this session's dialog work).
+
+## [1.3.41] - unreleased (local test build)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release.
+### Added
+- The "Document Information" dialog (`ⓘ` button) now has a "Read-only" row when the document is open read-only, worded as a filesystem/host condition ("Yes — the file on disk (or its host) is not writable") rather than an editor setting, since that's what it actually is and where the fix belongs (clear the OS attribute, not anything in this UI). Omitted entirely for editable documents — most documents are editable, and a "Read-only: No" row for the common case would just be noise.
+- This is a `@mdzip/editor` library change (the dialog is rendered by the shared editor engine, not the vscode extension), so it also applies to `mdzip.org`'s editor and MDZip Studio once they pick up the same build — not just this extension. Added 2 new tests directly in the editor package (`metadata-dialog.test.mjs`) covering both the present and absent cases; editor suite is 238+29 passing (was 236+29). Verified via a real jsdom render, not just typechecking, given how many "typechecks fine, wrong for real" surprises this session already had.
+
+## [1.3.40] - unreleased (local test build)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release.
+### Added
+- Read-only tabs now say so in the tab title itself (`ro_btn.mdz (Read-only)`), not just the toolbar's relabeled button and the one-time toast — kept in sync if the read-only attribute changes while the document's open (revert/external reload re-checks it). There's no vscode API for a custom editor to get VS Code's own lock-icon tab treatment (confirmed: its native Save button/menu stay enabled regardless of our internal read-only state, since that's generic per-editor-type chrome, not something `CustomEditorProvider` can opt into) — the tab title is the one thing directly under our control, so it carries the signal instead.
+
+## [1.3.39] - unreleased (local test build)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release.
+### Fixed
+- The actual root cause of the read-only detection never firing: got the diagnostic to a real, readable log this time and it showed `vscode.workspace.fs.stat()`'s `.permissions` field comes back **`undefined`** for a genuinely read-only local file (`ro_btn.mdz`) on this vscode build — despite Node's own `fs.stat().mode` correctly reflecting the Windows read-only attribute (write bit cleared) for the exact same file. My assumption that vscode derives `FilePermission.Readonly` from those same mode bits internally was simply wrong for this build. `MdzDocument._statReadOnly` now calls Node's `fs.stat()` on `uri.fsPath` directly instead of going through `vscode.workspace.fs.stat()`.
+- Rewrote the read-only tests to back them with real temp files + real `fs.chmod`, not the vscode mock's `permissions` field (which the code no longer even calls) — the previous 3 tests were asserting against a code path this build doesn't actually exercise, so they weren't proving what they looked like they were proving. Confirmed for real this time: `mode=444 -> true`, `mode=666 -> false`. Still 12/12 in `test:document`.
+
+## [1.3.38] - unreleased (local test build, diagnostic only)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release.
+- Found why 1.3.36/1.3.37's `console.error` diagnostic still never showed up in `exthost.log`: extensions that never register their own `vscode.window.createOutputChannel()` don't get *any* persisted log file for their `console.*` calls in this vscode build — confirmed by comparing against other extensions, which do have their own `windowN/exthost/<publisher>.<id>/<Channel>.log` files. This extension already had exactly such a channel (`'MDZip'`, created in `extension.ts`'s `activate()`) — it just wasn't accessible from `mdzDocument.ts`/`mdzEditorProvider.ts`. Extracted the logging (channel + `logInfo`/`logError`) into a new standalone `mdzLog.ts` module (avoids both a circular import back to `extension.ts` and dragging its whole dependency tree into `mdzDocument.ts`'s standalone test bundle) and routed every remaining `console.*` call in both files through it. Verified: still 12/12 in `test:document`.
+
+## [1.3.37] - unreleased (local test build)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release.
+### Fixed
+- Found why 1.3.36's diagnostic still never showed up: `exthost.log` had 4425 occurrences of `Error: Webview is disposed`, sustained continuously from 20:53 through the entire rest of the session across every subsequent reinstall (traced via a source map to `mdzEditorProvider.ts`'s `readDocumentText` handler). A closed panel's `.webview` getter throws synchronously; the response `postMessage` there was wrapped in `void` with no catch, so every readDocumentText reply for a panel that had since closed (very plausible with `books.mdz`'s 751 lazy documents) threw uncaught. Audited every other `panel.webview.postMessage()` call site in the file (8 total) — all had the same latent risk — and routed them all through a new `postToWebviewSafely()` helper that swallows exactly this failure (nothing to deliver to once a panel's closed; not exceptional). This was a real, independent bug, not something introduced by tonight's read-only work — likely a contributor to some of this session's earlier "No custom document found" instability too, though that's not confirmed.
+
+## [1.3.36] - unreleased (local test build, diagnostic only)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release.
+- 1.3.35's diagnostic log never showed up in `exthost.log` at all — checked back through this whole session and confirmed *no* `console.log()` call from this extension ever has, while other extensions' `console.error`/`.warn` output does. Switched the diagnostic (and the archive-size-skip notice from 1.3.33) to `console.error`.
+
+## [1.3.35] - unreleased (local test build, diagnostic only)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release.
+- 1.3.34's read-only detection didn't fire on a real read-only test fixture (`ro_btn.mdz`) in the actual extension host, despite the same file's `fs.stat().mode` correctly showing the write bit cleared via plain Node outside VS Code. Added a temporary diagnostic log to `MdzDocument._statReadOnly` to see what `vscode.workspace.fs.stat()` actually reports for `permissions` in the real environment before changing the detection logic further.
+
+## [1.3.34] - unreleased (local test build)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release.
+### Fixed
+- Read-only files (OS permission bit) gave no indication of being read-only until a save silently failed with a raw `EPERM` toast. `MdzDocument` now checks `fs.stat()`'s permission bit at open (and re-checks on revert/external reload, and clears the flag after a successful same-path save), and passes it through to the webview so it opens in `@mdzip/editor`'s existing built-in read-only mode — disables the CodeMirror editor, save/title buttons, and drag; relabels "Edit" to "Raw markdown". Also shows an explicit one-time notice on the file's first pane ("... is read-only on disk — opened in read-only mode"), since unlike VS Code's native text editor, custom editors get no automatic lock icon on the tab.
+- Save failures that look like a permissions problem (`EPERM`/`EACCES`, matched on the error's `.code` or, since vscode doesn't always structure it that way, a message-text fallback) now also show a clear, actionable message alongside VS Code's own toast, instead of leaving the user with only the raw `Error: EPERM: operation not permitted, open '...'` text.
+- Added 3 new tests covering read-only detection/refresh (extended the vscode mock with `fs.stat().permissions` + `FilePermission.Readonly` support) — all 12 tests in `test:document` pass.
+
+## [1.3.33] - unreleased (local test build)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release.
+### Fixed
+- Root cause found via the extension host log (`RangeError: Invalid array length` at `Buffer.toJSON` inside vscode's own `postMessage` internals, repeating on every later postMessage call in that webview's life until the extension host was killed and restarted — the "VS Code restarting" symptom): a 150MB+ `ArrayBuffer` in a single `postMessage` isn't actually safe in this vscode build despite what the type docs promise for 1.57+, regardless of whether it's sent as base64, `Uint8Array`, or `ArrayBuffer` (all three have now been tried; this is a transport ceiling, not an encoding issue). Now archives over 32MB simply skip sending the raw bytes for incremental patching — falls back to the existing, already-documented "rebuild the full workspace" path for asset mutations on those archives instead of crashing the extension host. `books.mdz` (146MB) hits this; `LARGE.mdz` (11MB) doesn't and keeps fast patching.
+- Caveat: I cannot exercise vscode's actual extension-host↔webview postMessage bridge from outside a real VS Code window (my Playwright-based repro harness uses plain in-page `postMessage`, which never had this bug in the first place) — the 32MB cutoff is a conservative guess comfortably under the observed 146MB failure, not a precisely bisected threshold. Please retest `books.mdz` for real.
+
+## [1.3.32] - unreleased (local test build)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release.
+### Fixed
+- 1.3.31's OOM fix sent the archive bytes as a `Uint8Array`, which stalled the open indefinitely ("Loading…" forever) instead of crashing. Per vscode's own `Webview.postMessage` docs, only a bare `ArrayBuffer` gets the efficient, correctly-recreated transfer even on modern vscode versions — a `Uint8Array` (or any other TypedArray) still gets "very inefficiently serialized" and doesn't arrive as a typed array at all. Now sent as an `ArrayBuffer` (`.slice()`d to the exact byte range, since the source `Uint8Array` isn't guaranteed to own its whole backing buffer) and reconstructed with `new Uint8Array(...)` on the webview side — same pattern `mdz-archive.worker-client.js` already uses for handing bytes to a Worker.
+- Caveat: my own repro harness for this used plain in-page `window.postMessage`, which structured-clones TypedArrays natively and didn't catch the Uint8Array/ArrayBuffer distinction — it's specific to vscode's actual extension-host↔webview bridge, which I can't fully exercise from outside a real VS Code window. Please retest `books.mdz` for real.
+
+## [1.3.31] - unreleased (local test build)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release.
+### Fixed
+- Opening a large `.mdz` (100MB+) could crash the extension host outright ("No custom document found" / "An error occurred while loading view") instead of just being slow. The extension was base64-encoding the full archive bytes *and* JSON-stringifying that already-inflated string into the postMessage payload — for `books.mdz` (153MB) that meant multiple 150–200MB string copies alive in memory at once, enough to OOM. Now sent as a raw `Uint8Array`, which `webview.postMessage` structured-clones directly (no base64, no extra JSON-stringify pass). Verified against the real 153MB test archive: previously an out-of-memory crash while just building the message; now completes in ~1s.
+
+## [1.3.30] - unreleased (local test build)
+> Built against local, unpublished `@mdzip/editor`/`@mdzip/editor-ng` source (not the npm registry) for sideload testing — not yet a real release.
+### Fixed
+- Large `.mdz` files (chat exports with thousands of embedded images) could hang the whole VS Code window ("window is not responding") on open. The actual cause was the preview rendering the entire document synchronously with `marked`+DOMPurify before mounting anything; enabled `progressiveTextRendering`, which chunks that render near the viewport instead. (1.3.29's worker wiring for archive/zip parsing was real but wasn't the bottleneck here — it's on by default in this build too.)
+### Added
+- The `.mdz` editor webview now runs archive parsing (open, and reload after edits) in a dedicated Worker instead of the main thread, using `@mdzip/editor`'s off-main-thread support — keeps large archives with many embedded images from freezing the tab. Falls back to the previous main-thread path if the worker can't start.
+
 ## [1.3.28] - 2026-07-08
 ### Changed
 - Upgraded to the published `@mdzip/editor` 1.3.15 and `@mdzip/core-js` 1.3.3 npm packages (replacing local source links). The editor upgrade brings the preview fixes from 1.3.14/1.3.15: raw HTML tag muting in the source pane, image layout attributes for raw HTML `<img>`, table alignment fixes, and contained Mermaid error rendering.

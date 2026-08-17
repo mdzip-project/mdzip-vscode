@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { MdzDocument } from './mdzDocument';
 import { MdzDiffPanel } from './mdzDiffPanel';
+import { logInfo, logError } from './mdzLog';
 import {
   buildNewArchiveBytesWithTitle,
   displayTitleFromManifest,
@@ -11,6 +12,9 @@ import {
   MdzipWorkspaceService,
   inferMdzipSourceFormat,
 } from '@mdzip/editor';
+
+// See the comment at its use in _buildWorkspaceEditorContentMessage.
+const ARCHIVE_BYTES_TRANSFER_LIMIT = 32 * 1024 * 1024; // 32MB
 
 /**
  * Custom editor provider for `.mdz` files.
@@ -218,6 +222,22 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       return;
     }
 
+    // The toolbar itself reflects read-only mode (save/title buttons disabled,
+    // "Edit" relabeled "Raw markdown"), but that's easy to miss — unlike VS
+    // Code's built-in text editor, custom editors get no automatic lock icon
+    // on the tab, and there's no API to add one (webviewPanel has no
+    // "readonly" flag VS Code's own chrome would react to — confirmed: its
+    // Save button/menu item stay enabled regardless, since that's generic
+    // per-editor-type UI, not something CustomEditorProvider can opt into).
+    // The one thing we *can* control directly is the tab's own title text —
+    // so mark it there too, not just the toast.
+    this._applyTabTitle(document, webviewPanel);
+    if (document.readOnly && this._panelsByDocument.get(document.uri.toString())?.size === 1) {
+      vscode.window.showInformationMessage(
+        `"${path.posix.basename(document.uri.path)}" is read-only on disk — opened in read-only mode.`
+      );
+    }
+
     const initialMode: EditorMode =
       MdzEditorProvider.consumeInitialMode(document.uri) ??
       (document.isNewDocument ? 'edit' : this._suggestInitialMode(document.uri));
@@ -250,7 +270,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       }
       const message = await initialContentPayload;
       if (message) {
-        await webviewPanel.webview.postMessage(message);
+        await postToWebviewSafely(webviewPanel, message);
       }
     };
     webviewPanel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
@@ -465,7 +485,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           try {
             await document.applyManifest(message.manifest ?? null);
           } catch (error) {
-            console.error('[MDZip] Failed to apply manifest change:', error);
+            logError('Failed to apply manifest change', error);
             vscode.window.showErrorMessage(
               `MDZip: failed to apply manifest change: ${error instanceof Error ? error.message : String(error)}`
             );
@@ -489,15 +509,14 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           if (typeof message.requestId !== 'number' || typeof message.path !== 'string') {
             return;
           }
-          console.log(`[MDZip] readDocumentText request ${message.requestId}: ${message.path}`);
           let text = '';
           try {
             const bytes = await document.readPathBytes(message.path);
             text = bytes ? new TextDecoder('utf-8').decode(bytes) : '';
           } catch (error) {
-            console.error(`[MDZip] Failed to read document text for ${message.path}:`, error);
+            logError(`Failed to read document text for ${message.path}`, error);
           }
-          void webviewPanel.webview.postMessage({
+          void postToWebviewSafely(webviewPanel, {
             type: 'documentText',
             requestId: message.requestId,
             text,
@@ -517,6 +536,9 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       if (event.reason !== 'reload') {
         return;
       }
+      // revert()/reloadFromDiskIfClean() re-check document.readOnly — reflect
+      // any change (e.g. the read-only attribute got cleared while open) here too.
+      this._applyTabTitle(document, webviewPanel);
       await this._sendWorkspaceEditorContent(webviewPanel.webview, document);
     });
     webviewPanel.onDidDispose(() => {
@@ -533,7 +555,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     webviewPanel.webview.html = this._buildWebviewHtml(webviewPanel.webview, document);
     // Send content asynchronously so webview renders immediately
     sendInitialContent().catch(error => {
-      console.error('[MDZip] Error sending workspace content:', error);
+      logError('Error sending workspace content', error);
     });
   }
 
@@ -541,11 +563,16 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     document: MdzDocument,
     _cancellation: vscode.CancellationToken
   ): Promise<void> {
-    if (document.sourceFormat === 'markdown' && document.isConvertedToMdz) {
-      await this._handleMarkdownConvertedToMdz(document);
-      return;
+    try {
+      if (document.sourceFormat === 'markdown' && document.isConvertedToMdz) {
+        await this._handleMarkdownConvertedToMdz(document);
+        return;
+      }
+      await document.save();
+    } catch (error) {
+      showFriendlySaveError(error, document.uri);
+      throw error; // Re-throw: vscode needs the rejection to keep the doc marked dirty.
     }
-    await document.save();
   }
 
   public async saveCustomDocumentAs(
@@ -553,7 +580,12 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     destination: vscode.Uri,
     _cancellation: vscode.CancellationToken
   ): Promise<void> {
-    await document.saveAs(destination);
+    try {
+      await document.saveAs(destination);
+    } catch (error) {
+      showFriendlySaveError(error, destination);
+      throw error;
+    }
   }
 
   public async revertCustomDocument(
@@ -633,26 +665,57 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
         timeoutPromise,
       ]);
 
-      // Always ship the backing archive bytes. Without them, image paste and
-      // other asset mutations rebuild the full workspace in the webview. On
-      // large archives that can complete with a stale text snapshot after the
-      // user has continued editing.
-      const archiveBytes = document.sourceFormat === 'mdz' ? document.currentArchiveBytes() : undefined;
-      const bytesBase64 =
-        archiveBytes && archiveBytes.length > 0
-          ? Buffer.from(archiveBytes).toString('base64')
-          : undefined;
+      // Ship the backing archive bytes when it's safe to. Without them,
+      // image paste and other asset mutations rebuild the full workspace in
+      // the webview instead of patching incrementally — on large archives
+      // that can complete with a stale text snapshot after the user has
+      // continued editing, but that's the existing, known tradeoff for
+      // archives over the cutoff below (not something introduced here).
+      //
+      // Sent as a raw ArrayBuffer (see OpenWorkspaceDirectMessage), not
+      // base64 text and not the Uint8Array itself — per vscode's own
+      // Webview.postMessage docs, only a bare ArrayBuffer gets the
+      // efficient, correctly-recreated transfer on 1.57+; a Uint8Array (or
+      // any other TypedArray) still gets "very inefficiently serialized"
+      // and arrives as a plain object, not a typed array.
+      //
+      // Cutoff: verified against the real 153MB books.mdz test archive that
+      // even the "efficient" ArrayBuffer path isn't actually safe at that
+      // size in practice — vscode's real postMessage implementation (at
+      // least on the build tested against) falls back to JSON.stringify-ing
+      // a Buffer.toJSON() of it internally for a message this large, which
+      // throws "RangeError: Invalid array length" trying to materialize a
+      // 150-million-element array, repeats on every later postMessage call
+      // in that webview's life, and eventually took down the whole
+      // extension host (had to be restarted). ARCHIVE_BYTES_TRANSFER_LIMIT
+      // is a conservative cutoff comfortably below that failure and above
+      // realistic everyday archive sizes — not a precisely measured ceiling
+      // (couldn't safely bisect the real threshold against a live crash).
+      const rawArchiveBytes = document.sourceFormat === 'mdz' ? document.currentArchiveBytes() : undefined;
+      if (rawArchiveBytes && rawArchiveBytes.length > ARCHIVE_BYTES_TRANSFER_LIMIT) {
+        logInfo(
+          `Archive is ${(rawArchiveBytes.length / 1024 / 1024).toFixed(1)}MB, over the ` +
+          `${(ARCHIVE_BYTES_TRANSFER_LIMIT / 1024 / 1024).toFixed(0)}MB postMessage transfer limit — ` +
+          'skipping incremental-patch bytes; asset mutations will rebuild the full workspace instead.'
+        );
+      }
+      const archiveBytes = rawArchiveBytes
+        && rawArchiveBytes.length > 0
+        && rawArchiveBytes.length <= ARCHIVE_BYTES_TRANSFER_LIMIT
+        ? (rawArchiveBytes.buffer as ArrayBuffer).slice(rawArchiveBytes.byteOffset, rawArchiveBytes.byteOffset + rawArchiveBytes.byteLength)
+        : undefined;
 
       return {
         type: 'openWorkspaceDirect',
         workspace: JSON.stringify(workspace),
-        bytesBase64,
+        archiveBytes,
         sourceFormat: document.sourceFormat,
         fileName,
         layout,
+        readOnly: document.readOnly,
       } satisfies OpenWorkspaceDirectMessage;
     } catch (error) {
-      console.error('[MDZip] Failed to build workspace content:', error);
+      logError('Failed to build workspace content', error);
       return undefined;
     }
   }
@@ -668,10 +731,20 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     }
   }
 
+  /** Marks the tab's own title text when the document is read-only — see the comment at the call sites. */
+  private _applyTabTitle(document: MdzDocument, webviewPanel: vscode.WebviewPanel): void {
+    const baseName = path.posix.basename(document.uri.path);
+    webviewPanel.title = document.readOnly ? `${baseName} (Read-only)` : baseName;
+  }
+
   /** Build the HTML for the webview panel. */
   private _buildWebviewHtml(webview: vscode.Webview, _document: MdzDocument): string {
     const mediaDir = path.join(this.context.extensionPath, 'media');
     const scriptUri = webview.asWebviewUri(vscode.Uri.file(path.join(mediaDir, 'editor.bundle.js')));
+    // Off-main-thread archive parsing (see webviewEditor.ts's worker wiring) — the
+    // webview constructs the actual Worker itself, this just tells it where the
+    // pre-bundled worker script lives under the webview's resource origin.
+    const workerUri = webview.asWebviewUri(vscode.Uri.file(path.join(mediaDir, 'mdz-archive.worker.js')));
     const nonce = getNonce();
 
     return /* html */ `<!DOCTYPE html>
@@ -682,7 +755,8 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
         content="default-src 'none';
                  img-src data: blob: ${webview.cspSource};
                  style-src ${webview.cspSource} 'unsafe-inline';
-                 script-src 'nonce-${nonce}';">
+                 script-src 'nonce-${nonce}';
+                 worker-src ${webview.cspSource};">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MDZip Editor</title>
   <style>
@@ -707,6 +781,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 <body>
   <div id="mdzip-loading">Loading…</div>
   <main id="mdzip-editor-root"></main>
+  <script nonce="${nonce}">window.__MDZIP_WORKER_URL__ = ${JSON.stringify(workerUri.toString())};</script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -734,7 +809,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       if (panel.webview === origin) {
         continue;
       }
-      tasks.push(Promise.resolve(panel.webview.postMessage(payload)));
+      tasks.push(postToWebviewSafely(panel, payload));
     }
 
     await Promise.all(tasks);
@@ -835,7 +910,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
       const forcedMode: EditorMode = mode === 'edit' ? 'preview' : 'edit';
       this._modeByWebview.set(panel.webview, forcedMode);
-      await panel.webview.postMessage({
+      await postToWebviewSafely(panel, {
         type: 'setMode',
         mode: forcedMode,
       } satisfies SetModeMessage);
@@ -886,7 +961,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
     const tasks: Promise<boolean>[] = [];
     for (const panel of set) {
-      tasks.push(Promise.resolve(panel.webview.postMessage(payload)));
+      tasks.push(postToWebviewSafely(panel, payload));
     }
     await Promise.all(tasks);
   }
@@ -909,7 +984,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
         }
       }
       this._splitLayoutUris.add(key);
-      await originPanel.webview.postMessage({
+      await postToWebviewSafely(originPanel, {
         type: 'layoutState',
         layout: 'split',
       } satisfies LayoutStateMessage);
@@ -937,7 +1012,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     }
 
     this._modeByWebview.set(originPanel.webview, layout);
-    await originPanel.webview.postMessage({
+    await postToWebviewSafely(originPanel, {
       type: 'setMode',
       mode: layout,
     } satisfies SetModeMessage);
@@ -954,7 +1029,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       const existingMode = this._modeByWebview.get(existingPanel.webview) ?? 'preview';
       const oppositeMode: EditorMode = existingMode === 'edit' ? 'preview' : 'edit';
 
-      await existingPanel.webview.postMessage({
+      await postToWebviewSafely(existingPanel, {
         type: 'layoutState',
         layout: 'split',
       } satisfies LayoutStateMessage);
@@ -980,7 +1055,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           continue;
         }
         this._modeByWebview.set(panel.webview, desiredOtherMode);
-        await panel.webview.postMessage({
+        await postToWebviewSafely(panel, {
           type: 'setMode',
           mode: desiredOtherMode,
         } satisfies SetModeMessage);
@@ -1394,10 +1469,18 @@ interface OpenWorkspaceMessage {
 interface OpenWorkspaceDirectMessage {
   type: 'openWorkspaceDirect';
   workspace: string; // JSON-serialized workspace with pre-resolved asset dataUri fields
-  bytesBase64?: string; // raw archive bytes for incremental patching (small archives only)
+  // Raw archive bytes for incremental patching, as a bare ArrayBuffer — see
+  // the fuller comment at the construction site in
+  // _buildWorkspaceEditorContentMessage for why it's an ArrayBuffer
+  // specifically (not base64 text, not a Uint8Array).
+  archiveBytes?: ArrayBuffer;
   sourceFormat: 'mdz' | 'markdown';
   fileName: string;
   layout: LayoutMode;
+  // True when the file's OS permission bit is read-only (see MdzDocument.readOnly).
+  // The webview opens with mode: 'read-only' when set, instead of silently
+  // accepting edits that only fail with a raw EPERM at save time.
+  readOnly: boolean;
 }
 
 interface DocumentTextMessage {
@@ -1471,8 +1554,49 @@ async function readUriBytes(uri: vscode.Uri): Promise<Uint8Array | undefined> {
   }
 }
 
+/**
+ * Posts a message to a panel's webview, swallowing "Webview is disposed"
+ * failures. A tracked panel can close between being read out of
+ * `_panelsByDocument` (or between scheduling a response and delivering it —
+ * e.g. readDocumentText's real disk I/O gap) and this call; that's a race,
+ * not a bug, and there's nowhere to deliver to at that point once it's
+ * closed. Found via the extension host log: an unguarded
+ * `webviewPanel.webview.postMessage()` in the readDocumentText handler threw
+ * synchronously (accessing `.webview` on a disposed panel throws
+ * "Webview is disposed") 4000+ times over one real test session before this.
+ */
+async function postToWebviewSafely(panel: vscode.WebviewPanel, message: unknown): Promise<boolean> {
+  try {
+    return await panel.webview.postMessage(message);
+  } catch {
+    return false;
+  }
+}
+
 function getNonce(): string {
   return require('crypto').randomBytes(16).toString('hex');
+}
+
+/**
+ * VS Code's default save-failure toast is just the raw thrown error (e.g.
+ * "Failed to save 'x.mdz': Error: EPERM: operation not permitted, open
+ * '...'") — technically accurate but doesn't tell the user *why* or what to
+ * do. This adds a clearer message alongside it for the common permissions
+ * case; the raw error/VS Code's own toast still surface too (caller re-throws).
+ */
+function showFriendlySaveError(error: unknown, uri: vscode.Uri): void {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  const message = error instanceof Error ? error.message : String(error);
+  const isPermissionError = code === 'EPERM' || code === 'EACCES'
+    || /\bEPERM\b|\bEACCES\b|permission denied/i.test(message);
+  if (!isPermissionError) {
+    return;
+  }
+  const name = path.posix.basename(uri.path);
+  vscode.window.showErrorMessage(
+    `Can't save "${name}" — the file is read-only or otherwise not writable on disk. ` +
+    'Clear its read-only attribute (or check permissions/source control) and try again.'
+  );
 }
 
 function sanitizePathSegment(segment: string): string {
