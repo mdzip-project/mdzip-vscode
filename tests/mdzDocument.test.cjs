@@ -5,6 +5,9 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────
 // Global file map must exist before the bundle loads (the mock reads it at call time,
@@ -30,6 +33,24 @@ function seedFs(entries) {
 /** Current bytes on disk for the given path. */
 function diskRead(posixPath) {
   return global.__vscodeMockFiles.get(posixPath);
+}
+
+// _statReadOnly reads the real OS permission bit via Node's own fs.stat() on
+// uri.fsPath (not vscode.workspace.fs.stat() — confirmed in a real extension
+// host that its .permissions comes back undefined for a genuinely read-only
+// local file on this vscode build). So these tests need a real file on disk,
+// not just an entry in the mocked in-memory fs used elsewhere in this file.
+
+/** Creates a real temp file (auto-cleaned by the OS temp dir; not removed per-test). */
+function createRealFile(basename, content) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdzip-test-'));
+  const filePath = path.join(dir, basename);
+  fs.writeFileSync(filePath, content);
+  return filePath;
+}
+
+function setRealReadOnly(filePath, readOnly) {
+  fs.chmodSync(filePath, readOnly ? 0o444 : 0o666);
 }
 
 /** Minimal Uri-like object the bundle will accept (scheme, path, fsPath, toString, with). */
@@ -188,4 +209,53 @@ test('serialized .mdz workspace identifies packaged images missing from markdown
     ['images/unused-five.png', 'images/unused-four.png']
   );
   doc.dispose();
+});
+
+test('readOnly reflects the file system permission bit at open', async () => {
+  const writablePath = createRealFile('writable.md', '# Hello\n');
+  const lockedPath = createRealFile('locked.md', '# Hello\n');
+  setRealReadOnly(lockedPath, true);
+  seedFs({ [writablePath]: '# Hello\n', [lockedPath]: '# Hello\n' });
+
+  const writable = await MdzDocument.create(fakeUri(writablePath));
+  const locked = await MdzDocument.create(fakeUri(lockedPath));
+
+  assert.equal(writable.readOnly, false);
+  assert.equal(locked.readOnly, true);
+
+  writable.dispose();
+  locked.dispose();
+  setRealReadOnly(lockedPath, false); // so the OS temp-dir cleanup can remove it
+});
+
+test('readOnly is refreshed on revert (attribute cleared while open)', async () => {
+  const filePath = createRealFile('was-locked.md', '# Hello\n');
+  setRealReadOnly(filePath, true);
+  seedFs({ [filePath]: '# Hello\n' });
+
+  const doc = await MdzDocument.create(fakeUri(filePath));
+  assert.equal(doc.readOnly, true, 'should start read-only');
+
+  setRealReadOnly(filePath, false);
+  await doc.revert();
+  assert.equal(doc.readOnly, false, 'revert should re-check and pick up the cleared attribute');
+
+  doc.dispose();
+});
+
+test('readOnly clears after a successful save to the same path (proves current writability)', async () => {
+  const { buildNewArchiveBytesWithTitle } = await import('@mdzip/editor');
+  const archiveBytes = await buildNewArchiveBytesWithTitle('# Hello\n', 'hello');
+  const filePath = createRealFile('stale-flag.mdz', archiveBytes);
+  setRealReadOnly(filePath, true);
+  seedFs({ [filePath]: archiveBytes }); // the mock's writeFile doesn't enforce real OS permissions
+
+  const doc = await MdzDocument.create(fakeUri(filePath));
+  assert.equal(doc.readOnly, true);
+
+  await doc.save(); // succeeds against the mock regardless of the real read-only attribute
+  assert.equal(doc.readOnly, false, 'a successful write is stronger evidence than a stale stat() result');
+
+  doc.dispose();
+  setRealReadOnly(filePath, false);
 });

@@ -7,6 +7,10 @@ function files() {
   return (global.__vscodeMockFiles = global.__vscodeMockFiles ?? new Map());
 }
 
+function readOnlyFiles() {
+  return (global.__vscodeMockReadOnlyFiles = global.__vscodeMockReadOnlyFiles ?? new Set());
+}
+
 class Uri {
   constructor(scheme, path) {
     this.scheme = scheme;
@@ -58,6 +62,7 @@ module.exports = {
   Uri,
   EventEmitter,
   RelativePattern,
+  FilePermission: { Readonly: 1 },
   workspace: {
     fs: {
       async readFile(uri) {
@@ -85,7 +90,13 @@ module.exports = {
           err.code = 'FileNotFound';
           throw err;
         }
-        return { type: 1, ctime: 0, mtime: 0, size: data.length };
+        return {
+          type: 1,
+          ctime: 0,
+          mtime: 0,
+          size: data.length,
+          permissions: readOnlyFiles().has(key) ? 1 : undefined,
+        };
       },
     },
     createFileSystemWatcher(_pattern) {
