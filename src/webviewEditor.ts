@@ -42,6 +42,19 @@ interface DocumentTextMessage {
   text: string;
 }
 
+/**
+ * Sent only to the throwaway panel `mdzip.convertFolderToMdz` opens (see
+ * runPackFilesDialog in extension.ts) — never to a real document's editor panel.
+ * `files` is the host's already-collected folder walk; packFilesAsWorkspace is
+ * @mdzip/editor's own built-in Document/Project mode + entry-point dialog.
+ */
+interface PackFilesMessage {
+  type: 'packFiles';
+  files: Array<{ path: string; bytesBase64: string }>;
+  title?: string;
+  fileName?: string;
+}
+
 const vscode = acquireVsCodeApi();
 const root = document.getElementById('mdzip-editor-root');
 
@@ -54,6 +67,57 @@ let currentLayout: MdzipWorkspaceLayout = 'preview';
 let currentSourceFormat: MdzipSourceFormat = 'mdz';
 let editor: MdzipWorkspaceView | null = null;
 let hasOpenedWorkspace = false;
+
+// Separate from `editor` above: only the throwaway convertFolderToMdz panel ever
+// receives a 'packFiles' message, and it never sends openWorkspace/openWorkspaceDirect,
+// so `editor` stays null for that panel's whole lifetime. Kept as its own instance
+// (chrome-less — see the `controls` below) rather than reusing `editor`'s state
+// machine, so this path can't interfere with the normal open-workspace flow.
+let packEditor: MdzipWorkspaceView | null = null;
+
+async function handlePackFiles(message: PackFilesMessage): Promise<void> {
+  const files = message.files.map((file) => ({ path: file.path, bytes: base64ToBytes(file.bytesBase64) }));
+  if (!packEditor) {
+    packEditor = new MdzipWorkspaceView(rootElement, {
+      initialColorScheme: detectColorScheme(),
+      controls: {
+        toolbar: false,
+        navigation: false,
+        title: false,
+        layout: false,
+        formatting: false,
+        contextMenu: false,
+        save: false,
+        zoom: false,
+        colorScheme: false,
+        orphanActions: false,
+        fileActions: false,
+        search: false,
+      },
+    });
+  }
+
+  try {
+    const result = await packEditor.packFilesAsWorkspace(files, { title: message.title, fileName: message.fileName });
+    vscode.postMessage({
+      type: 'packFilesResult',
+      result: result
+        ? {
+            mode: result.mode,
+            entryPoint: result.entryPoint,
+            archiveBytesBase64: bytesToBase64(result.archiveBytes),
+            opened: result.opened,
+          }
+        : null,
+    });
+  } catch (error) {
+    vscode.postMessage({
+      type: 'packFilesResult',
+      result: null,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 // Off-main-thread archive parsing: the host (mdzEditorProvider.ts) injects the
 // webview-resource URL of the pre-bundled mdz-archive.worker.js as a global
@@ -166,7 +230,7 @@ function readCurrentLayout(): MdzipWorkspaceLayout {
   return currentLayout;
 }
 
-window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | OpenWorkspaceDirectMessage | DocumentTextMessage>) => {
+window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | OpenWorkspaceDirectMessage | DocumentTextMessage | PackFilesMessage>) => {
   const message = event.data;
   if (message?.type === 'documentText') {
     const resolve = pendingTextRequests.get(message.requestId);
@@ -174,6 +238,10 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
       pendingTextRequests.delete(message.requestId);
       resolve(message.text);
     }
+    return;
+  }
+  if (message?.type === 'packFiles') {
+    void handlePackFiles(message);
     return;
   }
   if (message?.type !== 'openWorkspace' && message?.type !== 'openWorkspaceDirect') {

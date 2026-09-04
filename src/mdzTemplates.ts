@@ -28,6 +28,12 @@ interface TemplateConfig {
   suggestedFileName?: string;
   parameters?: TemplateParameter[];
   openAfterGeneration?: string[];
+  /** Whether archives created from this template get the default AGENTS.md
+   * (see agentsMdAsset). Defaults to true — matches the pre-existing
+   * always-include behavior — so only an explicit `false` opts a template
+   * out. A folder template that already ships its own top-level AGENTS.md
+   * always wins over this, same as before. */
+  includeAgents?: boolean;
 }
 
 interface TemplateDefinition {
@@ -365,7 +371,8 @@ async function renderTemplateToMdzBytes(
 ): Promise<Uint8Array> {
   if (template.kind === 'builtin') {
     const markdown = renderTemplateString(template.markdown || '', values);
-    return buildNewArchiveBytesWithTitle(markdown, values.title, [await agentsMdAsset(context)]);
+    const assets = template.config?.includeAgents === false ? [] : [await agentsMdAsset(context)];
+    return buildNewArchiveBytesWithTitle(markdown, values.title, assets);
   }
 
   if (!template.uri) {
@@ -374,9 +381,11 @@ async function renderTemplateToMdzBytes(
 
   if (template.kind === 'markdown') {
     const source = TEXT_DECODER.decode(await vscode.workspace.fs.readFile(template.uri));
-    const markdown = renderTemplateString(source, values);
+    const { body, includeAgents } = parseTemplateFrontmatter(source);
+    const markdown = renderTemplateString(body, values);
     const title = suggestedTitleFromMarkdown(markdown, values.title);
-    return buildNewArchiveBytesWithTitle(markdown, title, [await agentsMdAsset(context)]);
+    const assets = includeAgents === false ? [] : [await agentsMdAsset(context)];
+    return buildNewArchiveBytesWithTitle(markdown, title, assets);
   }
 
   if (template.kind === 'mdz') {
@@ -401,6 +410,35 @@ async function renderTemplateToMdzBytes(
   return renderFolderTemplate(context, template.uri, values);
 }
 
+/** Strips a leading `---`-delimited frontmatter block from a single-file
+ * Markdown template, if present, and parses simple `key: value` lines out of
+ * it — currently only `mdzipIncludeAgents: true|false` is recognized (see
+ * TemplateConfig.includeAgents, the folder-template equivalent). Anything
+ * else in the block is ignored rather than erroring, so templates can carry
+ * frontmatter for other tools too. No frontmatter block means `includeAgents`
+ * comes back `undefined` (caller falls back to the default-on behavior). */
+export function parseTemplateFrontmatter(source: string): { body: string; includeAgents: boolean | undefined } {
+  const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!match) {
+    return { body: source, includeAgents: undefined };
+  }
+
+  let includeAgents: boolean | undefined;
+  for (const line of match[1].split(/\r?\n/)) {
+    const keyValue = line.match(/^\s*mdzipIncludeAgents\s*:\s*(.+?)\s*$/i);
+    if (!keyValue) {
+      continue;
+    }
+    if (/^(true|yes)$/i.test(keyValue[1])) {
+      includeAgents = true;
+    } else if (/^(false|no)$/i.test(keyValue[1])) {
+      includeAgents = false;
+    }
+  }
+
+  return { body: source.slice(match[0].length), includeAgents };
+}
+
 /** The default `AGENTS.md` bundled into every newly created .mdz archive, telling
  * agents without native MDZip support how to consume this file safely — in
  * particular, to prefer the MDZip MCP server (for reads and writes, not just
@@ -409,6 +447,14 @@ export async function agentsMdAsset(context: vscode.ExtensionContext): Promise<N
   const uri = vscode.Uri.joinPath(context.extensionUri, 'media', 'templates', 'embedded-agent-guide.md');
   const fileBytes = await vscode.workspace.fs.readFile(uri);
   return { archivePath: 'AGENTS.md', fileBytes };
+}
+
+/** A short, human-facing `README.md`: what `.mdz` is and how to open one without
+ * the MDZip extension. Offered as an opt-in checkbox in `mdzip.convertMarkdownToMdz`. */
+export async function readmeMdAsset(context: vscode.ExtensionContext): Promise<NewArchiveAsset> {
+  const uri = vscode.Uri.joinPath(context.extensionUri, 'media', 'templates', 'embedded-readme.md');
+  const fileBytes = await vscode.workspace.fs.readFile(uri);
+  return { archivePath: 'README.md', fileBytes };
 }
 
 async function renderFolderTemplate(
@@ -440,15 +486,23 @@ async function renderFolderTemplate(
       fileBytes: file.bytes,
     }));
 
-  // Respect a folder template that already ships its own AGENTS.md.
-  if (!assets.some((asset) => asset.archivePath.toLowerCase() === 'agents.md')) {
+  // Respect a folder template that already ships its own AGENTS.md, or one
+  // that explicitly opts out via template.config.json's "includeAgents": false.
+  const includeAgents = config?.includeAgents !== false;
+  if (includeAgents && !assets.some((asset) => asset.archivePath.toLowerCase() === 'agents.md')) {
     assets.push(await agentsMdAsset(context));
   }
 
   return buildNewArchiveBytesWithTitle(markdown, title, assets);
 }
 
-async function readFolderFiles(
+const SKIPPED_FOLDER_NAMES = new Set(['.git', 'node_modules']);
+const SKIPPED_FILE_NAMES = new Set(['.DS_Store', 'Thumbs.db']);
+
+/** Recursively collects every file under a folder as {relativePath, bytes}, skipping
+ * `.git`/`node_modules` directories and common OS-generated junk files (`.DS_Store`,
+ * `Thumbs.db`). Shared by folder-template rendering and `mdzip.convertFolderToMdz`. */
+export async function readFolderFiles(
   folderUri: vscode.Uri,
   currentUri = folderUri,
   prefix = ''
@@ -456,6 +510,12 @@ async function readFolderFiles(
   const files: Array<{ relativePath: string; bytes: Uint8Array }> = [];
   const entries = await vscode.workspace.fs.readDirectory(currentUri);
   for (const [name, type] of entries.sort(([left], [right]) => left.localeCompare(right))) {
+    if (type === vscode.FileType.Directory && SKIPPED_FOLDER_NAMES.has(name)) {
+      continue;
+    }
+    if (type === vscode.FileType.File && SKIPPED_FILE_NAMES.has(name)) {
+      continue;
+    }
     const relativePath = prefix ? `${prefix}/${name}` : name;
     const uri = vscode.Uri.joinPath(currentUri, name);
     if (type === vscode.FileType.Directory) {
@@ -561,7 +621,7 @@ async function pickConfigurationScope(): Promise<vscode.ConfigurationTarget | un
   return picked?.target;
 }
 
-async function confirmOverwriteIfNeeded(uri: vscode.Uri): Promise<boolean> {
+export async function confirmOverwriteIfNeeded(uri: vscode.Uri): Promise<boolean> {
   try {
     await vscode.workspace.fs.stat(uri);
   } catch {

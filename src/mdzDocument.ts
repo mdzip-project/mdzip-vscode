@@ -236,10 +236,12 @@ export class MdzDocument implements vscode.CustomDocument {
     const docDir = path.dirname(this.uri.fsPath);
     const relPaths = new Set<string>();
 
-    for (const match of markdown.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-      let target = match[1]?.trim() ?? '';
-      if (target.startsWith('<') && target.endsWith('>')) { target = target.slice(1, -1).trim(); }
-      target = target.split(/[?#]/)[0].trim();
+    // MdzArchiveCore.extractImageReferences is the one canonical scan for both
+    // markdown ![]() syntax and raw HTML <img src> tags — this used to keep its
+    // own ![]()-only copy, which is exactly why a raw-<img>-only file (like the
+    // star-wars-demo sample) rendered with every relative image broken.
+    for (const rawTarget of MdzArchiveCore.extractImageReferences(markdown)) {
+      const target = rawTarget.split(/[?#]/)[0].trim();
       if (!target) { continue; }
       // Skip absolute URLs, protocol-relative, and absolute paths
       if (/^[a-zA-Z][\w+.-]*:/.test(target) || target.startsWith('//') || target.startsWith('/') || /^[a-zA-Z]:[/\\]/.test(target)) { continue; }

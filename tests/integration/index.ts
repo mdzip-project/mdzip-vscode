@@ -4,6 +4,8 @@ import Mocha from 'mocha';
 export function run(): Promise<void> {
   const mocha = new Mocha({ ui: 'tdd', timeout: 30000, color: true });
   mocha.addFile(path.resolve(__dirname, 'save.test.js'));
+  mocha.addFile(path.resolve(__dirname, 'mcp-config.test.js'));
+  mocha.addFile(path.resolve(__dirname, 'claude-mcp-config.test.js'));
 
   return new Promise((resolve, reject) => {
     mocha.run(failures => {

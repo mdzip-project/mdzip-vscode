@@ -4,14 +4,18 @@ import * as os from 'os';
 import { promises as fs } from 'fs';
 import { execFile } from 'child_process';
 import type { GitExtension } from './vendor/git';
-import { MdzEditorProvider } from './mdzEditorProvider';
+import { MdzEditorProvider, getNonce, postToWebviewSafely } from './mdzEditorProvider';
 import { MdzDiffPanel } from './mdzDiffPanel';
 import { initLogging, logInfo, logError } from './mdzLog';
+import { MdzArchiveCore } from '@mdzip/core-js';
 import {
   agentsMdAsset,
   configureTemplateFolder,
+  confirmOverwriteIfNeeded,
   createMdzFromTemplate,
   openTemplatesFolder,
+  readFolderFiles,
+  readmeMdAsset,
 } from './mdzTemplates';
 import {
   buildNewArchiveBytesWithTitle,
@@ -28,6 +32,38 @@ const BUNDLED_MCP_SERVER_KEY = 'MDZip';
 const LEGACY_BUNDLED_MCP_SERVER_KEY = 'mdzip';
 const MCP_LAUNCHER_FILENAME = 'mdzip-mcp-launcher.cjs';
 const MDZIP_EXTENSION_PACKAGE_NAME = 'mdzip-project.mdzip-vscode';
+const CONVERT_REMEMBERED_CHOICES_KEY = 'mdzip.convertToMdz.rememberedChoices.v1';
+const CONVERT_AUTO_REMEMBER_KEY = 'mdzip.convertToMdz.autoRemember.v1';
+
+/** Toggle-able options in `mdzip.convertMarkdownToMdz`'s checkbox picker, keyed by
+ * their QuickPick item and (optionally) persisted as remembered defaults. `copyImages`
+ * is deliberately excluded from the always-present defaults — it only applies, and is
+ * only remembered, on runs where the source markdown actually has relative images. */
+interface ConvertToMdzChoices {
+  copyImages?: boolean;
+  addAgentsGuide: boolean;
+  addReadme: boolean;
+  deleteOriginal: boolean;
+  appendZipSuffix: boolean;
+}
+
+const CONVERT_TO_MDZ_HARDCODED_DEFAULTS: ConvertToMdzChoices = {
+  copyImages: true,
+  addAgentsGuide: true,
+  addReadme: true,
+  deleteOriginal: false,
+  appendZipSuffix: false,
+};
+
+/** Whether a URI is an MDZip archive by name: `.mdz`, or `.mdz.zip` (the
+ * "for recipients without MDZip support" naming from `mdzip.convertMarkdownToMdz`'s
+ * checkbox picker). Shared by every command that gates on "is this file an .mdz",
+ * so `.mdz.zip` behaves consistently with `.mdz` everywhere, not just in the
+ * custom editor's own selector. */
+function isMdzUri(uri: vscode.Uri): boolean {
+  const lowerPath = uri.path.toLowerCase();
+  return lowerPath.endsWith('.mdz') || lowerPath.endsWith('.mdz.zip');
+}
 
 async function pickMdzFile(prompt: string): Promise<vscode.Uri | undefined> {
   const result = await vscode.window.showOpenDialog({
@@ -54,7 +90,7 @@ async function resolveMdzFileForCommand(
     for (const group of vscode.window.tabGroups.all) {
       for (const tab of group.tabs) {
         if (tab.isActive && tab.input instanceof vscode.TabInputCustom &&
-            tab.input.uri.path.toLowerCase().endsWith('.mdz')) {
+            isMdzUri(tab.input.uri)) {
           fileUri = tab.input.uri;
           break;
         }
@@ -68,12 +104,36 @@ async function resolveMdzFileForCommand(
     if (!fileUri) { return undefined; }
   }
 
-  if (!fileUri.path.toLowerCase().endsWith('.mdz')) {
+  if (!isMdzUri(fileUri)) {
     vscode.window.showWarningMessage('Select a .mdz file.');
     return undefined;
   }
 
   return fileUri;
+}
+
+/** Resolve a target folder for `mdzip.convertFolderToMdz`: an explicit resource
+ * arg (Explorer context menu on a folder), else a folder picker (command palette). */
+async function resolveFolderForCommand(resource: unknown): Promise<vscode.Uri | undefined> {
+  const uri = resourceUriFromCommandArg(resource);
+  if (uri) {
+    try {
+      const stat = await vscode.workspace.fs.stat(uri);
+      if (stat.type === vscode.FileType.Directory) {
+        return uri;
+      }
+    } catch {
+      // Fall through to the picker below.
+    }
+  }
+
+  const selected = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    title: 'Select Folder to Convert to .mdz',
+  });
+  return selected?.[0];
 }
 
 /** Whether this .mdz has unsaved edits in an open custom-editor tab. Custom
@@ -148,7 +208,7 @@ async function resolveGitCompareTarget(
     for (const group of vscode.window.tabGroups.all) {
       for (const tab of group.tabs) {
         if (tab.input instanceof vscode.TabInputCustom &&
-            tab.input.uri.path.toLowerCase().endsWith('.mdz')) {
+            isMdzUri(tab.input.uri)) {
           fileUri = tab.input.uri;
           break;
         }
@@ -162,7 +222,7 @@ async function resolveGitCompareTarget(
     if (!fileUri) return undefined;
   }
 
-  if (!fileUri.path.toLowerCase().endsWith('.mdz')) {
+  if (!isMdzUri(fileUri)) {
     vscode.window.showWarningMessage('Select a .mdz file to compare with git base.');
     return undefined;
   }
@@ -202,6 +262,15 @@ export interface MdzipTestApi {
    * so integration tests can verify the full VS Code save flow synchronously.
    */
   simulateWebviewChange(uri: vscode.Uri, bytes: Uint8Array): void;
+  /** The user-profile mcp.json path `mdzip.enableUserMcp` writes to. For integration tests only. */
+  getUserMcpConfigPath(): string;
+  /**
+   * Runs the same stale-.mcp.json repair check that normally fires on activation and on
+   * workspace-folder changes. For integration tests only — driving it via a real folder-add
+   * is unreliable in a test host (going from a single-folder window to multi-root also forces
+   * a reload, same as the empty-to-first-folder case), so tests call this directly instead.
+   */
+  runClaudeMcpRepairCheck(): Promise<void>;
 }
 
 export function activate(context: vscode.ExtensionContext): MdzipTestApi {
@@ -236,6 +305,12 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
 
   void maybeShowWelcomeWalkthrough(context);
   void maybePromptAiToolMcpSetup(context);
+  void maybeRepairClaudeMcpConfig(context);
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      void maybeRepairClaudeMcpConfig(context);
+    })
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mdzip.copyMcpConfigSnippet', async () => {
@@ -299,25 +374,43 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
   context.subscriptions.push(
     vscode.commands.registerCommand('mdzip.enableUserMcp', async () => {
       const launcherConfig = await getGlobalLauncherMcpServerConfig(context);
-      const opened = await openBuiltInMcpConfiguration(['mcp', 'user', 'configuration']);
-      const editor = vscode.window.activeTextEditor;
-      if (!opened || !editor) {
+      const mcpConfigUri = getUserMcpConfigUri(context);
+
+      try {
+        let config: { servers?: Record<string, unknown> } = {};
+        try {
+          const existing = await vscode.workspace.fs.readFile(mcpConfigUri);
+          config = JSON.parse(new TextDecoder('utf-8').decode(existing));
+        } catch {
+          // Missing file is expected on first run.
+        }
+
+        if (!config || typeof config !== 'object') {
+          config = {};
+        }
+        if (!config.servers || typeof config.servers !== 'object') {
+          config.servers = {};
+        }
+        upsertBundledMcpServer(config.servers, launcherConfig);
+
+        await vscode.workspace.fs.createDirectory(parentUri(mcpConfigUri));
+        await vscode.workspace.fs.writeFile(
+          mcpConfigUri,
+          new TextEncoder().encode(`${JSON.stringify(config, null, 2)}\n`)
+        );
+
+        const document = await vscode.workspace.openTextDocument(mcpConfigUri);
+        await vscode.window.showTextDocument(document);
+        vscode.window.showInformationMessage('Enabled MDZip MCP server in user MCP configuration.');
+      } catch (error) {
+        logError('Failed to write user MCP configuration directly', error);
         await vscode.env.clipboard.writeText(
           JSON.stringify({ servers: { [BUNDLED_MCP_SERVER_KEY]: launcherConfig } }, null, 2)
         );
         vscode.window.showWarningMessage(
-          'Could not open the user MCP configuration automatically. The MDZip MCP config snippet was copied to the clipboard instead.'
+          'Could not write the user MCP configuration automatically. The MDZip MCP config snippet was copied to the clipboard instead.'
         );
-        return;
       }
-
-      const nextText = mergeMcpConfigText(editor.document.getText(), launcherConfig);
-      const edit = new vscode.WorkspaceEdit();
-      const end = editor.document.lineAt(editor.document.lineCount - 1).range.end;
-      edit.replace(editor.document.uri, new vscode.Range(new vscode.Position(0, 0), end), `${nextText}\n`);
-      await vscode.workspace.applyEdit(edit);
-      await editor.document.save();
-      vscode.window.showInformationMessage('Enabled MDZip MCP server in user MCP configuration.');
     })
   );
 
@@ -458,26 +551,120 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
       const dirPath = slashIndex >= 0 ? sourcePath.slice(0, slashIndex) : '';
       const sourceName = slashIndex >= 0 ? sourcePath.slice(slashIndex + 1) : sourcePath;
       const baseName = sourceName.replace(/\.md$/i, '') || 'document';
-      const targetUri = sourceUri.with({ path: `${dirPath}/${baseName}.mdz` });
       const derivedTitle = suggestedTitleFromMarkdown(markdown, baseName);
       const relativeImageAssets = await collectRelativeMarkdownImageAssets(sourceUri, markdown);
 
-      let buildAssets: readonly { archivePath: string; fileBytes: Uint8Array }[] = [];
-      if (relativeImageAssets.length > 0) {
-        const copySelection = await vscode.window.showInformationMessage(
-          `Found ${relativeImageAssets.length} relative image reference${relativeImageAssets.length === 1 ? '' : 's'}. Copy matching files into the new .mdz?`,
-          { modal: true },
-          'Copy Images',
-          'Skip Images'
-        );
+      // A single checkbox-style multi-select instead of sequential modal prompts — VS Code's
+      // MessageOptions (showInformationMessage/showWarningMessage, modal or not) has no
+      // checkbox support (only `modal`/`detail`), but showQuickPick's canPickMany does, and
+      // it collapses what would otherwise be several dialogs into one.
+      const remembered = context.globalState.get<ConvertToMdzChoices>(CONVERT_REMEMBERED_CHOICES_KEY);
+      const autoRemember = context.globalState.get<boolean>(CONVERT_AUTO_REMEMBER_KEY, false);
+      const defaults: ConvertToMdzChoices = autoRemember
+        ? { ...CONVERT_TO_MDZ_HARDCODED_DEFAULTS, ...remembered }
+        : CONVERT_TO_MDZ_HARDCODED_DEFAULTS;
 
-        if (copySelection === 'Copy Images') {
-          buildAssets = relativeImageAssets;
-        }
+      type ConvertOptionKey = keyof ConvertToMdzChoices | 'rememberChoices';
+      type ConvertOption = vscode.QuickPickItem & { key: ConvertOptionKey };
+      const options: ConvertOption[] = [];
+      if (relativeImageAssets.length > 0) {
+        options.push({
+          key: 'copyImages',
+          label: `$(file-media) Copy ${relativeImageAssets.length} relative image reference${relativeImageAssets.length === 1 ? '' : 's'} into the archive`,
+          picked: defaults.copyImages,
+        });
+      }
+      options.push({
+        key: 'addAgentsGuide',
+        label: '$(robot) Add an AGENTS.md guide for AI coding agents',
+        picked: defaults.addAgentsGuide,
+      });
+      options.push({
+        key: 'addReadme',
+        label: '$(book) Add a README.md for human readers',
+        picked: defaults.addReadme,
+      });
+      options.push({
+        key: 'deleteOriginal',
+        label: '$(trash) Delete the original .md file after converting',
+        picked: defaults.deleteOriginal,
+      });
+      options.push({
+        key: 'appendZipSuffix',
+        label: '$(file-zip) Name it "<file>.mdz.zip" (for recipients without MDZip support)',
+        picked: defaults.appendZipSuffix,
+      });
+      options.push({
+        key: 'rememberChoices',
+        label: autoRemember
+          ? '$(save) Remembering these choices as the default (uncheck to stop)'
+          : '$(save) Remember these choices as the default from now on',
+        picked: autoRemember,
+      });
+
+      const selected = await vscode.window.showQuickPick(options, {
+        title: 'Convert to .mdz',
+        placeHolder: 'Choose what to include, then press Enter (Esc cancels)',
+        canPickMany: true,
+      });
+      if (!selected) {
+        return; // Cancelled (Escape) — abort the whole conversion, don't write a partial .mdz.
+      }
+
+      const selectedKeys = new Set(selected.map((option) => option.key));
+      const chosen: ConvertToMdzChoices = {
+        addAgentsGuide: selectedKeys.has('addAgentsGuide'),
+        addReadme: selectedKeys.has('addReadme'),
+        deleteOriginal: selectedKeys.has('deleteOriginal'),
+        appendZipSuffix: selectedKeys.has('appendZipSuffix'),
+      };
+      if (relativeImageAssets.length > 0) {
+        chosen.copyImages = selectedKeys.has('copyImages');
+      }
+
+      const rememberChecked = selectedKeys.has('rememberChoices');
+      if (rememberChecked) {
+        // Checked (whether newly or still) — (re)save this run's picks as the remembered
+        // defaults and (re)activate. Always visible and always reflects current state, so
+        // there's nothing to hunt for later: checked = active, unchecking it is the "off" switch.
+        await context.globalState.update(CONVERT_REMEMBERED_CHOICES_KEY, { ...remembered, ...chosen });
+        await context.globalState.update(CONVERT_AUTO_REMEMBER_KEY, true);
+      } else if (autoRemember) {
+        // Was active, explicitly unchecked this run — turn it off. Leaves the previously
+        // remembered values in storage (dormant, not deleted) in case it's turned back on.
+        await context.globalState.update(CONVERT_AUTO_REMEMBER_KEY, false);
+      }
+
+      const buildAssets: { archivePath: string; fileBytes: Uint8Array }[] = [];
+      if (chosen.copyImages) {
+        buildAssets.push(...relativeImageAssets);
+      }
+      if (chosen.addAgentsGuide) {
+        buildAssets.push(await agentsMdAsset(context));
+      }
+      if (chosen.addReadme) {
+        buildAssets.push(await readmeMdAsset(context));
+      }
+
+      const targetExtension = chosen.appendZipSuffix ? '.mdz.zip' : '.mdz';
+      const targetUri = sourceUri.with({ path: `${dirPath}/${baseName}${targetExtension}` });
+      if (!(await confirmOverwriteIfNeeded(targetUri))) {
+        return; // Target exists and the user declined to overwrite it — abort, nothing written.
       }
 
       const bytes = await buildNewArchiveBytesWithTitle(markdown, derivedTitle, buildAssets);
       await vscode.workspace.fs.writeFile(targetUri, bytes);
+
+      if (chosen.deleteOriginal) {
+        try {
+          await vscode.workspace.fs.delete(sourceUri, { useTrash: true });
+        } catch (error) {
+          logError('Failed to delete original markdown after conversion', error);
+          vscode.window.showWarningMessage(
+            `Converted to ${path.posix.basename(targetUri.path)}, but could not delete the original ${path.posix.basename(sourceUri.path)}.`
+          );
+        }
+      }
 
       MdzEditorProvider.markNextOpenInSplit(targetUri);
       await vscode.commands.executeCommand('vscode.openWith', targetUri, 'mdzip.mdzEditor');
@@ -550,7 +737,7 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
         let rightUri = resource;
         if (!rightUri) {
           const activeUri = vscode.window.activeTextEditor?.document.uri;
-          if (activeUri?.path.toLowerCase().endsWith('.mdz')) {
+          if (activeUri && isMdzUri(activeUri)) {
             rightUri = activeUri;
           }
         }
@@ -706,6 +893,63 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
         `Enabled MDZip MCP server for Codex. Restart Codex or open a new Codex session for the server to become available.${trustNote}`
       );
       await context.globalState.update('mdzip.aiToolMcpSetupPrompt.state.v1', 'enabled');
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.enableClaudeMcp', async () => {
+      const configUri = getWorkspaceClaudeMcpConfigUri();
+      if (!configUri) {
+        vscode.window.showWarningMessage('Open a workspace folder to enable the MDZip MCP server for Claude Code.');
+        return;
+      }
+
+      const launcherConfig = await getGlobalLauncherMcpServerConfig(context);
+
+      let config: { mcpServers?: Record<string, unknown> } = {};
+      try {
+        const existing = await vscode.workspace.fs.readFile(configUri);
+        config = JSON.parse(new TextDecoder('utf-8').decode(existing));
+      } catch {
+        // Missing file is expected on first run.
+      }
+      if (!config || typeof config !== 'object') {
+        config = {};
+      }
+      if (!config.mcpServers || typeof config.mcpServers !== 'object') {
+        config.mcpServers = {};
+      }
+      upsertBundledMcpServer(config.mcpServers, launcherConfig);
+
+      await vscode.workspace.fs.writeFile(
+        configUri,
+        new TextEncoder().encode(`${JSON.stringify(config, null, 2)}\n`)
+      );
+
+      const document = await vscode.workspace.openTextDocument(configUri);
+      await vscode.window.showTextDocument(document);
+      vscode.window.showInformationMessage(
+        'Enabled MDZip MCP server for Claude Code in .mcp.json. Restart Claude Code or start a new session for the server to become available.'
+      );
+      await context.globalState.update('mdzip.aiToolMcpSetupPrompt.state.v1', 'enabled');
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.copyClaudeMcpConfigSnippet', async () => {
+      const launcherConfig = await getGlobalLauncherMcpServerConfig(context);
+      const snippet = JSON.stringify(
+        {
+          mcpServers: {
+            [BUNDLED_MCP_SERVER_KEY]: launcherConfig,
+          },
+        },
+        null,
+        2
+      );
+
+      await vscode.env.clipboard.writeText(snippet);
+      vscode.window.showInformationMessage('Copied MDZip MCP server config snippet (Claude Code mcpServers format) to clipboard.');
     })
   );
 
@@ -866,6 +1110,43 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.convertFolderToMdz', async (resource?: unknown) => {
+      const folderUri = await resolveFolderForCommand(resource);
+      if (!folderUri) { return; }
+
+      const collected = await readFolderFiles(folderUri);
+      if (collected.length === 0) {
+        vscode.window.showWarningMessage('The selected folder has no files to pack.');
+        return;
+      }
+
+      const folderName = path.posix.basename(folderUri.path) || 'archive';
+      // The Document/Project mode + entry-point decision (only shown when the
+      // folder has more than one .md file) is @mdzip/editor's own built-in
+      // dialog — packFilesAsWorkspace lives on the webview side, so it's run
+      // in a throwaway panel rather than reimplemented as a native QuickPick,
+      // per mdzip-editor#34's whole point: don't build this UI twice.
+      const packed = await runPackFilesDialog(
+        context,
+        collected.map((file) => ({ path: file.relativePath, bytes: file.bytes })),
+        { title: folderName, fileName: `${folderName}.mdz` }
+      );
+      if (!packed) {
+        return; // Cancelled in the built-in dialog — nothing written.
+      }
+
+      const targetUri = vscode.Uri.joinPath(parentUri(folderUri), `${folderName}.mdz`);
+      if (!(await confirmOverwriteIfNeeded(targetUri))) {
+        return;
+      }
+
+      await vscode.workspace.fs.writeFile(targetUri, packed.archiveBytes);
+      MdzEditorProvider.markNextOpenInSplit(targetUri);
+      await vscode.commands.executeCommand('vscode.openWith', targetUri, 'mdzip.mdzEditor');
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand('mdzip.addAgentsGuide', async (resource?: unknown) => {
       const fileUri = await resolveMdzFileForCommand(resource, 'Select .mdz file to add AGENTS.md to');
       if (!fileUri) { return; }
@@ -908,6 +1189,8 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
   return {
     hasDocument(uri) { return MdzEditorProvider.hasDocumentForUri(uri); },
     simulateWebviewChange(uri, bytes) { MdzEditorProvider.simulateWebviewChange(uri, bytes); },
+    getUserMcpConfigPath() { return getUserMcpConfigUri(context).fsPath; },
+    runClaudeMcpRepairCheck() { return maybeRepairClaudeMcpConfig(context); },
   };
 }
 
@@ -963,7 +1246,7 @@ async function maybePromptAiToolMcpSetup(context: vscode.ExtensionContext): Prom
       },
       {
         label: 'Claude Code',
-        description: 'Claude Code setup is not available in this build',
+        description: 'Write project .mcp.json (mcpServers)',
       },
       {
         label: 'VS Code / Copilot',
@@ -986,7 +1269,7 @@ async function maybePromptAiToolMcpSetup(context: vscode.ExtensionContext): Prom
   }
 
   if (target.label === 'Claude Code') {
-    vscode.window.showInformationMessage('Claude Code MCP setup is not available in this build yet.');
+    await vscode.commands.executeCommand('mdzip.enableClaudeMcp');
     return;
   }
 
@@ -1069,11 +1352,6 @@ async function openWalkthrough(context: vscode.ExtensionContext): Promise<boolea
   }
 }
 
-async function openBuiltInMcpConfiguration(terms: string[]): Promise<boolean> {
-  const commands = await vscode.commands.getCommands(true);
-  return executeDiscoveredCommand(commands, [terms]);
-}
-
 function findCommandId(commands: readonly string[], terms: string[]): string | undefined {
   const loweredTerms = terms.map((term) => term.toLowerCase());
   return commands.find((command) => {
@@ -1082,30 +1360,22 @@ function findCommandId(commands: readonly string[], terms: string[]): string | u
   });
 }
 
-function mergeMcpConfigText(
-  existingText: string,
-  serverConfig: { type: 'stdio'; command: string; args: string[] }
-): string {
-  let parsed: { servers?: Record<string, unknown> } = {};
-  if (existingText.trim()) {
-    parsed = JSON.parse(existingText) as { servers?: Record<string, unknown> };
-  }
-  if (!parsed || typeof parsed !== 'object') {
-    parsed = {};
-  }
-  if (!parsed.servers || typeof parsed.servers !== 'object') {
-    parsed.servers = {};
-  }
-  upsertBundledMcpServer(parsed.servers, serverConfig);
-  return JSON.stringify(parsed, null, 2);
-}
-
 function upsertBundledMcpServer(
   servers: Record<string, unknown>,
   serverConfig: { type: 'stdio'; command: string; args: string[] }
 ): void {
   delete servers[LEGACY_BUNDLED_MCP_SERVER_KEY];
   servers[BUNDLED_MCP_SERVER_KEY] = serverConfig;
+}
+
+/**
+ * The user-profile mcp.json lives alongside settings.json at `<UserDataDir>/User/mcp.json`.
+ * `context.globalStorageUri` is `<UserDataDir>/User/globalStorage/<extension-id>/`, so its
+ * grandparent is `<UserDataDir>/User/` — this derives the path from the running environment
+ * instead of hardcoding OS-specific locations, so it works for stable/Insiders/remote/portable.
+ */
+function getUserMcpConfigUri(context: vscode.ExtensionContext): vscode.Uri {
+  return vscode.Uri.joinPath(context.globalStorageUri, '..', '..', 'mcp.json');
 }
 
 function getUserCodexConfigUri(): vscode.Uri {
@@ -1118,6 +1388,76 @@ function getWorkspaceCodexConfigUri(): vscode.Uri | undefined {
     return undefined;
   }
   return vscode.Uri.joinPath(workspaceFolder.uri, '.codex', 'config.toml');
+}
+
+/**
+ * Claude Code reads project-scoped MCP servers from `.mcp.json` at the workspace root,
+ * under an `mcpServers` key (not VS Code's `servers`, and not `.vscode/`).
+ */
+function getWorkspaceClaudeMcpConfigUri(): vscode.Uri | undefined {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    return undefined;
+  }
+  return vscode.Uri.joinPath(workspaceFolder.uri, '.mcp.json');
+}
+
+/**
+ * Detects and repairs a workspace `.mcp.json` whose `MDZip`/`mdzip` entry was hand-written
+ * (or written by an older build) pointing at a specific installed extension version's `dist/`
+ * folder — that path is orphaned by every extension update. Only touches the file when the
+ * referenced path genuinely no longer resolves; a working config (launcher-based or otherwise)
+ * is left untouched.
+ */
+async function maybeRepairClaudeMcpConfig(context: vscode.ExtensionContext): Promise<void> {
+  const configUri = getWorkspaceClaudeMcpConfigUri();
+  if (!configUri) {
+    return;
+  }
+
+  let existingText: string;
+  try {
+    const existing = await vscode.workspace.fs.readFile(configUri);
+    existingText = new TextDecoder('utf-8').decode(existing);
+  } catch {
+    return; // No .mcp.json — nothing to repair.
+  }
+
+  let config: { mcpServers?: Record<string, { args?: unknown[] }> };
+  try {
+    config = JSON.parse(existingText);
+  } catch {
+    return; // Malformed JSON — don't touch it.
+  }
+
+  const entry = config?.mcpServers?.[BUNDLED_MCP_SERVER_KEY] ?? config?.mcpServers?.[LEGACY_BUNDLED_MCP_SERVER_KEY];
+  const entryPath = Array.isArray(entry?.args) ? entry.args[0] : undefined;
+  // Real installed extension folders are named `<publisher>.<name>-<version>`, e.g.
+  // `mdzip-project.mdzip-vscode-1.3.42` — build the pattern from the actual package name
+  // rather than hardcoding a fragment of it.
+  const escapedPackageName = MDZIP_EXTENSION_PACKAGE_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const versionedPathPattern = new RegExp(`[\\\\/]${escapedPackageName}-[^\\\\/]+[\\\\/]`);
+  if (typeof entryPath !== 'string' || !versionedPathPattern.test(entryPath)) {
+    return; // Not a version-pinned extension path — either already the launcher, or unrelated.
+  }
+
+  try {
+    await fs.access(entryPath);
+    return; // Still resolves — not actually broken, leave it alone.
+  } catch {
+    // Falls through — the referenced version's dist/ is gone, repair it below.
+  }
+
+  const launcherConfig = await getGlobalLauncherMcpServerConfig(context);
+  if (!config.mcpServers || typeof config.mcpServers !== 'object') {
+    config.mcpServers = {};
+  }
+  upsertBundledMcpServer(config.mcpServers, launcherConfig);
+  await vscode.workspace.fs.writeFile(configUri, new TextEncoder().encode(`${JSON.stringify(config, null, 2)}\n`));
+  logInfo('Repaired stale version-pinned MDZip entry in .mcp.json', entryPath);
+  vscode.window.showInformationMessage(
+    'Repaired the MDZip MCP server entry in .mcp.json — it pointed at a since-removed extension version, now uses a version-independent launcher.'
+  );
 }
 
 function parentUri(uri: vscode.Uri): vscode.Uri {
@@ -1331,9 +1671,22 @@ function tomlString(value: string): string {
 
 function buildWorkspaceAgentInstructionsBlock(): string {
   return [
+    '## Working with `.mdz` Files',
+    '',
+    'This workspace may contain `.mdz` files — MDZip archives: ZIP-based containers that package a Markdown document, its assets, and optional metadata into one portable file.',
+    '',
+    'Before reading or editing a `.mdz`, actively check whether an MDZip MCP server is already available among your tools (for example, tool names beginning `mdz_`, or `upsert_canonical_document`). Do not assume one is unavailable just because it was not mentioned — check first. If one is available, skip to "MDZip MCP Review Guidance" below.',
+    '',
+    'If no MDZip MCP server is available:',
+    '',
+    '- Ask the user to run `MDZip: Enable Workspace MCP Server` or `MDZip: Enable User MCP Server` (from the MDZip VS Code extension) to make one available, or `MDZip: Copy MCP Server Config Snippet` for a manual/remote setup.',
+    '- If the MDZip extension is not installed, ask the user to install it — or, as an immediate fallback, read the archive directly: `.mdz` is a standard ZIP file, so any unzip tool can extract it.',
+    '- To find a `.mdz`\'s entry point without a manifest reader: check `manifest.json`\'s `entryPoint` field first; otherwise look for `index.md` in the archive root; otherwise, if there is exactly one Markdown file in the archive root, use that. Ignore support files (`AGENTS.md`, `README.md`, `LICENSE.md`, `CHANGELOG.md`) when guessing.',
+    '- Reading this way (manual ZIP inspection) is fine — it is non-destructive. Writing this way is not: a write performed outside MDZip-aware tooling has no way to detect a conflicting edit made elsewhere (e.g. in an open MDZip editor) and can silently discard it. Ask the user how they would like to proceed before writing to a `.mdz` without MCP or extension support.',
+    '',
     '## MDZip MCP Review Guidance',
     '',
-    'When reviewing, summarizing, or editing `.mdz` files:',
+    'When reviewing, summarizing, or editing `.mdz` files with an MDZip MCP server available:',
     '',
     '1. Call `mdz_review_document` first with the `.mdz` `archivePath`.',
     '2. Use the returned `resolvedMarkdownPath`, `canonicalEntrypointPath`, and `entrypointSource` fields before deciding on write actions.',
@@ -1432,24 +1785,12 @@ async function collectRelativeMarkdownImageAssets(
   return [...assets.entries()].map(([archivePath, fileBytes]) => ({ archivePath, fileBytes }));
 }
 
+// MdzArchiveCore.extractImageReferences is the one canonical scan for both
+// markdown ![]() syntax and raw HTML <img src> tags — this used to keep its
+// own ![]()-only copy of the same regex, missing images embedded via raw
+// <img> tags (used for sizing/alignment control markdown can't express).
 function extractMarkdownImageTargets(markdown: string): string[] {
-  const targets = new Set<string>();
-  const imagePattern = /!\[[^\]]*\]\(([^)]+)\)/g;
-
-  for (const match of markdown.matchAll(imagePattern)) {
-    const rawTarget = match[1]?.trim();
-    if (!rawTarget) {
-      continue;
-    }
-
-    const angleBracketMatch = rawTarget.match(/^<(.+)>$/);
-    const target = angleBracketMatch ? angleBracketMatch[1].trim() : rawTarget;
-    if (target) {
-      targets.add(target);
-    }
-  }
-
-  return [...targets];
+  return [...new Set(MdzArchiveCore.extractImageReferences(markdown))];
 }
 
 function isRelativeImageTarget(target: string): boolean {
@@ -1472,4 +1813,135 @@ function isRelativeImageTarget(target: string): boolean {
   }
 
   return true;
+}
+
+/** Result of a completed pack-files dialog — matches @mdzip/editor's
+ * MdzipPackFilesResult, with archiveBytes decoded back from the wire. */
+interface PackFilesDialogResult {
+  mode: 'document' | 'project';
+  entryPoint: string;
+  archiveBytes: Uint8Array;
+  opened: boolean;
+}
+
+/**
+ * Runs the folder→.mdz Document/Project mode + entry-point decision — @mdzip/editor's
+ * own built-in dialog (`packFilesAsWorkspace`), which lives on the webview side, not
+ * something this extension reimplements as a native QuickPick (see mdzip-editor#34:
+ * the whole point of that shared API was for hosts *not* to build this UI twice).
+ * Opens a throwaway webview panel purely as a UI surface for that one decision — never
+ * a real document (no CustomEditorProvider, no save/dirty tracking) — collects the
+ * result, and disposes the panel. Resolves `null` if the user cancels the dialog.
+ */
+async function runPackFilesDialog(
+  context: vscode.ExtensionContext,
+  files: readonly { path: string; bytes: Uint8Array }[],
+  options: { title: string; fileName: string }
+): Promise<PackFilesDialogResult | null> {
+  const panel = vscode.window.createWebviewPanel(
+    'mdzip.packFilesDialog',
+    `Convert "${options.title}" to .mdz`,
+    vscode.ViewColumn.Active,
+    // true, not the usual false: this is a short-lived one-shot dialog session, not a
+    // real document — if the user switches tabs mid-decision, `retainContextWhenHidden:
+    // false` would tear down its page state, and the extension host's one-shot 'ready'
+    // guard would then never resend `packFiles` to the reloaded page, stranding the
+    // promise. Keeping context alive costs a little memory for a panel that's disposed
+    // within seconds either way.
+    { enableScripts: true, retainContextWhenHidden: true }
+  );
+
+  try {
+    panel.webview.html = buildPackFilesWebviewHtml(context, panel.webview);
+
+    return await new Promise<PackFilesDialogResult | null>((resolve) => {
+      let settled = false;
+      let sentFiles = false;
+      const finish = (value: PackFilesDialogResult | null) => {
+        if (settled) { return; }
+        settled = true;
+        resolve(value);
+      };
+
+      panel.webview.onDidReceiveMessage((message: unknown) => {
+        if (!message || typeof message !== 'object') { return; }
+        const type = (message as { type?: unknown }).type;
+
+        if (type === 'ready') {
+          // The webview re-pings 'ready' every 250ms until it recognizes a message
+          // (see postReadyUntilOpened in webviewEditor.ts) — only act on the first.
+          if (sentFiles) { return; }
+          sentFiles = true;
+          void postToWebviewSafely(panel, {
+            type: 'packFiles',
+            files: files.map((file) => ({ path: file.path, bytesBase64: bytesToBase64(file.bytes) })),
+            title: options.title,
+            fileName: options.fileName,
+          });
+          return;
+        }
+
+        if (type === 'packFilesResult') {
+          const payload = message as {
+            result?: { mode: 'document' | 'project'; entryPoint: string; archiveBytesBase64: string; opened: boolean } | null;
+            errorMessage?: string;
+          };
+          if (payload.errorMessage) {
+            logError('packFilesAsWorkspace failed in webview', payload.errorMessage);
+            vscode.window.showErrorMessage(`Could not convert the folder to .mdz: ${payload.errorMessage}`);
+            finish(null);
+            return;
+          }
+          finish(payload.result
+            ? {
+                mode: payload.result.mode,
+                entryPoint: payload.result.entryPoint,
+                archiveBytes: base64ToBytes(payload.result.archiveBytesBase64),
+                opened: payload.result.opened,
+              }
+            : null);
+        }
+      });
+
+      panel.onDidDispose(() => finish(null));
+    });
+  } finally {
+    panel.dispose();
+  }
+}
+
+function buildPackFilesWebviewHtml(context: vscode.ExtensionContext, webview: vscode.Webview): string {
+  const mediaDir = path.join(context.extensionPath, 'media');
+  const scriptUri = webview.asWebviewUri(vscode.Uri.file(path.join(mediaDir, 'editor.bundle.js')));
+  const nonce = getNonce();
+
+  return /* html */ `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none';
+                 img-src data: blob: ${webview.cspSource};
+                 style-src ${webview.cspSource} 'unsafe-inline';
+                 script-src 'nonce-${nonce}';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Convert Folder to .mdz</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { position: relative; background: var(--vscode-editor-background, #1e1e1e); }
+  </style>
+</head>
+<body>
+  <main id="mdzip-editor-root"></main>
+  <script nonce="${nonce}" src="${scriptUri}"></script>
+</body>
+</html>`;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64');
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  return new Uint8Array(Buffer.from(value, 'base64'));
 }

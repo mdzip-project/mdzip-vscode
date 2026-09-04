@@ -5,6 +5,9 @@ private/
 docs/
 .vscode-test/
 
+# Written by tests/integration/*.test.ts against the fixture workspace folder
+tests/integration/fixture/.mcp.json
+
 # Packaged outputs
 *.vsix
 *.tgz

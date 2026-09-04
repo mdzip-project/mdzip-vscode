@@ -64,6 +64,17 @@ Custom templates can come from folders configured with `MDZip: Configure Templat
 
 Use placeholders such as `{title}`, `{filename}`, `{date}`, `{datetime}`, and configured parameter variables inside template Markdown or file paths.
 
+Every new `.mdz` gets an `AGENTS.md` guide for AI coding agents by default. A folder template opts out with `"includeAgents": false` in `template.config.json` (a folder template that already ships its own top-level `AGENTS.md` is left as-is either way); a single-file Markdown template opts out with `mdzipIncludeAgents: false` in a leading `---` frontmatter block, which is stripped before the file becomes the document:
+
+```markdown
+---
+mdzipIncludeAgents: false
+---
+# {title}
+
+Start writing here.
+```
+
 ### Converting Markdown to MDZip
 
 Select a `.md` file and run:

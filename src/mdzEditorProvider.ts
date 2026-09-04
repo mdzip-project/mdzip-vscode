@@ -1565,7 +1565,7 @@ async function readUriBytes(uri: vscode.Uri): Promise<Uint8Array | undefined> {
  * synchronously (accessing `.webview` on a disposed panel throws
  * "Webview is disposed") 4000+ times over one real test session before this.
  */
-async function postToWebviewSafely(panel: vscode.WebviewPanel, message: unknown): Promise<boolean> {
+export async function postToWebviewSafely(panel: vscode.WebviewPanel, message: unknown): Promise<boolean> {
   try {
     return await panel.webview.postMessage(message);
   } catch {
@@ -1573,7 +1573,7 @@ async function postToWebviewSafely(panel: vscode.WebviewPanel, message: unknown)
   }
 }
 
-function getNonce(): string {
+export function getNonce(): string {
   return require('crypto').randomBytes(16).toString('hex');
 }
 

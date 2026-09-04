@@ -211,6 +211,38 @@ test('serialized .mdz workspace identifies packaged images missing from markdown
   doc.dispose();
 });
 
+test('serialized .md workspace resolves images referenced via raw HTML <img> tags', async () => {
+  // Regression guard: _loadRelativeDiskImages used to only recognize markdown
+  // ![]() syntax, so a plain .md that references its images exclusively via
+  // raw <img src> tags (as mdzip.org's star-wars-demo sample does, for
+  // sizing/alignment control markdown can't express) rendered with every
+  // image broken — MdzArchiveCore.extractImageReferences() is what fixed it.
+  const nodePath = require('node:path');
+  const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+  const absImagePath = nodePath.resolve('/project', 'images/star-wars.png'.replace(/\//g, nodePath.sep));
+  seedFs({
+    '/project/index.md': [
+      '# Star Wars',
+      '<img src="images/star-wars.png" alt="Pasted image" width="250" align="right">',
+      "<img src='images/poster.png' align='left'>",
+      '![markdown-syntax](images/markdown.png)',
+    ].join('\n'),
+    [absImagePath.replace(/\\/g, '/')]: imageBytes,
+    [nodePath.resolve('/project', 'images/poster.png').replace(/\\/g, '/')]: imageBytes,
+    [nodePath.resolve('/project', 'images/markdown.png').replace(/\\/g, '/')]: imageBytes,
+  });
+
+  const doc = await MdzDocument.create(fakeUri('/project/index.md'));
+  const workspace = await doc.getSerializedWorkspace();
+
+  const diskAssetPaths = workspace.assets
+    .filter((asset) => typeof asset.dataUri === 'string' && asset.dataUri.startsWith('data:'))
+    .map((asset) => asset.path)
+    .sort();
+  assert.deepEqual(diskAssetPaths, ['images/markdown.png', 'images/poster.png', 'images/star-wars.png']);
+  doc.dispose();
+});
+
 test('readOnly reflects the file system permission bit at open', async () => {
   const writablePath = createRealFile('writable.md', '# Hello\n');
   const lockedPath = createRealFile('locked.md', '# Hello\n');
