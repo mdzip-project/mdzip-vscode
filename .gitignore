@@ -11,6 +11,7 @@ tests/integration/fixture/.mcp.json
 # Packaged outputs
 *.vsix
 *.tgz
+build/
 
 # Local scratch archives and docs
 *.zip

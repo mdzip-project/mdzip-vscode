@@ -171,5 +171,8 @@ npm test
 To package a `.vsix` for local installation:
 
 ```bash
-npx vsce package
+npm run package
 ```
+
+This runs the full bundle step and writes `mdzip-vscode-<version>.vsix` into `build/`
+(gitignored), printing the absolute path when done.
