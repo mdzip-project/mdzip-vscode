@@ -527,7 +527,7 @@
   },
   "dependencies": {
     "@mdzip/core-js": "file:../mdzip-core-js/mdzip-core-js-1.5.0.tgz",
-    "@mdzip/editor": "file:../mdzip-editor/packages/editor/mdzip-editor-1.3.21.tgz",
+    "@mdzip/editor": "file:../mdzip-editor/packages/editor/mdzip-editor-1.4.0.tgz",
     "@modelcontextprotocol/sdk": "^1.17.4",
     "jsdom": "^29.1.1",
     "marked": "^15.0.12",
