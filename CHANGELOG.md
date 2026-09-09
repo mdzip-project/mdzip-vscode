@@ -1,8 +1,8 @@
 # Change Log
 
-## [1.3.62] - unreleased
+## [1.3.63] - 2026-09-08
 
-> Consolidates local test builds 1.3.29–1.3.62 into the changes since the last published version (1.3.28) — not every intermediate build. Several fixes landed in `@mdzip/editor` / `@mdzip/core-js` and also benefit MDZip Studio and mdzip.org.
+> Consolidates local test builds 1.3.29–1.3.63 into the changes since the last published version (1.3.28) — not every intermediate build. Several fixes landed in `@mdzip/editor` / `@mdzip/core-js` and also benefit MDZip Studio and mdzip.org.
 
 ### Added
 - **Convert a folder into a single `.mdz`.** New `mdzip.convertFolderToMdz` command ("MDZip: Convert Folder to .mdz") — Explorer context menu on a folder, or the command palette with a folder picker. Recursively packs the folder (skipping `.git`, `node_modules`, `.DS_Store`, `Thumbs.db`) into `<folder-name>.mdz` and opens it, reusing `@mdzip/editor`'s Document/Project-mode + entry-point dialog when the folder has more than one `.md` file. (issue #2)
@@ -24,6 +24,10 @@
 - **`postMessage` to closed webview panels** threw uncaught (thousands of times per session, a likely source of extension-host instability); all call sites now use a safe wrapper.
 
 ### Changed
+- Upgraded to the published `@mdzip/editor` 1.4.0 and `@mdzip/core-js` 1.5.0 npm
+  packages (replacing local source links). Bundles the document-statistics API,
+  the expanded Document Information dialog, code-block spellcheck suppression,
+  and the `fflate` / public `extractImageReferences` changes noted above.
 - Explorer context-menu MDZip commands cluster as one separated group instead of interleaving with VS Code's built-ins.
 - "MDZip: Enable User MCP Server" writes the user `mcp.json` directly instead of falling back to a clipboard copy. (issue #5)
 

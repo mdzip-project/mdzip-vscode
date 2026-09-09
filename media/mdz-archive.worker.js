@@ -6725,7 +6725,7 @@ try {
 
 // ../../node_modules/@mdzip/core-js/dist/mdz-core.js
 var PRODUCER_SPEC_VERSION = "1.1.0";
-var CORE_LIBRARY_VERSION = "1.4.0";
+var CORE_LIBRARY_VERSION = "1.5.0";
 var CORE_LIBRARY_URL = "https://github.com/mdzip-project/mdzip-core-js";
 var MDZ_IMAGE_MIME_TYPES = {
   png: "image/png",
