@@ -7,6 +7,7 @@ import type { GitExtension } from './vendor/git';
 import { MdzEditorProvider, getNonce, postToWebviewSafely } from './mdzEditorProvider';
 import { MdzDiffPanel } from './mdzDiffPanel';
 import { initLogging, logInfo, logError } from './mdzLog';
+import { registerMdzLanguageModelTools } from './mdzLanguageModelTools';
 import { MdzArchiveCore } from '@mdzip/core-js';
 import {
   agentsMdAsset,
@@ -302,6 +303,10 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
       },
     })
   );
+
+  // Native VS Code Language Model Tools — for in-editor chat participants (Copilot Chat and
+  // similar) that consume vscode.lm.registerTool directly, no MCP server or config required.
+  context.subscriptions.push(...registerMdzLanguageModelTools());
 
   void maybeShowWelcomeWalkthrough(context);
   void maybePromptAiToolMcpSetup(context);
@@ -936,6 +941,51 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.enableClaudeUserMcp', async () => {
+      const configUri = getUserClaudeMcpConfigUri();
+
+      let existingText: string;
+      try {
+        const existing = await vscode.workspace.fs.readFile(configUri);
+        existingText = new TextDecoder('utf-8').decode(existing);
+      } catch {
+        vscode.window.showWarningMessage(
+          'Could not find ~/.claude.json. Start Claude Code at least once so it creates its user config, then re-run this command.'
+        );
+        return;
+      }
+
+      const launcherConfig = await getGlobalLauncherMcpServerConfig(context);
+
+      try {
+        const config: { mcpServers?: Record<string, unknown> } = JSON.parse(existingText);
+        if (!config.mcpServers || typeof config.mcpServers !== 'object') {
+          config.mcpServers = {};
+        }
+        upsertBundledMcpServer(config.mcpServers, launcherConfig);
+
+        await vscode.workspace.fs.writeFile(
+          configUri,
+          new TextEncoder().encode(`${JSON.stringify(config, null, 2)}\n`)
+        );
+
+        vscode.window.showInformationMessage(
+          'Enabled the MDZip MCP server for Claude Code at user scope — available in every project on this machine now, with no per-project setup. Start a new Claude Code session for it to take effect.'
+        );
+        await context.globalState.update('mdzip.aiToolMcpSetupPrompt.state.v1', 'enabled');
+      } catch (error) {
+        logError('Failed to update ~/.claude.json directly', error);
+        await vscode.env.clipboard.writeText(
+          JSON.stringify({ mcpServers: { [BUNDLED_MCP_SERVER_KEY]: launcherConfig } }, null, 2)
+        );
+        vscode.window.showWarningMessage(
+          'Could not update ~/.claude.json automatically (it may be malformed). Copied the MDZip MCP server config snippet to the clipboard instead — merge it into the "mcpServers" key by hand.'
+        );
+      }
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand('mdzip.copyClaudeMcpConfigSnippet', async () => {
       const launcherConfig = await getGlobalLauncherMcpServerConfig(context);
       const snippet = JSON.stringify(
@@ -1246,7 +1296,7 @@ async function maybePromptAiToolMcpSetup(context: vscode.ExtensionContext): Prom
       },
       {
         label: 'Claude Code',
-        description: 'Write project .mcp.json (mcpServers)',
+        description: 'Write user or project mcpServers config',
       },
       {
         label: 'VS Code / Copilot',
@@ -1269,7 +1319,30 @@ async function maybePromptAiToolMcpSetup(context: vscode.ExtensionContext): Prom
   }
 
   if (target.label === 'Claude Code') {
-    await vscode.commands.executeCommand('mdzip.enableClaudeMcp');
+    const userLabel = 'User Config';
+    const workspaceLabel = 'Workspace Config';
+    const claudeSelection = await vscode.window.showQuickPick(
+      [
+        {
+          label: userLabel,
+          description: '~/.claude.json — every project on this machine',
+        },
+        {
+          label: workspaceLabel,
+          description: '.mcp.json — this workspace only',
+        },
+      ],
+      {
+        title: 'Enable MDZip MCP Server for Claude Code',
+        placeHolder: 'Choose where to write Claude Code MCP configuration',
+      }
+    );
+
+    if (claudeSelection?.label === userLabel) {
+      await vscode.commands.executeCommand('mdzip.enableClaudeUserMcp');
+    } else if (claudeSelection?.label === workspaceLabel) {
+      await vscode.commands.executeCommand('mdzip.enableClaudeMcp');
+    }
     return;
   }
 
@@ -1400,6 +1473,18 @@ function getWorkspaceClaudeMcpConfigUri(): vscode.Uri | undefined {
     return undefined;
   }
   return vscode.Uri.joinPath(workspaceFolder.uri, '.mcp.json');
+}
+
+/**
+ * Claude Code's user-scope config — applies to every project opened on this machine, so
+ * (unlike the workspace `.mcp.json` above) it only needs to be written once. We only ever
+ * update the `mcpServers` key of this file; every other key is Claude Code's own state and
+ * is round-tripped untouched. We require the file to already exist (i.e. Claude Code has
+ * run at least once) rather than create it from scratch, since its schema is Claude Code's
+ * own and not ours to originate.
+ */
+function getUserClaudeMcpConfigUri(): vscode.Uri {
+  return vscode.Uri.file(path.join(os.homedir(), '.claude.json'));
 }
 
 /**

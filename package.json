@@ -44,6 +44,185 @@
         "label": "MDZip MCP Server"
       }
     ],
+    "languageModelTools": [
+      {
+        "name": "mdzip_review_document",
+        "displayName": "Review MDZip Document",
+        "modelDescription": "Preferred first call for review/analyze/summarize requests on an .mdz file. Returns markdown text and referenced images plus canonical/entrypoint resolution metadata, including canonicalContentHash — pass that back as expectedContentHash to mdzip_upsert_canonical_document to guard against overwriting edits made elsewhere since this read.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "mdzReviewDocument",
+        "icon": "$(book)",
+        "tags": ["mdzip", "mdz"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "archivePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the .mdz file."
+            },
+            "entryPath": {
+              "type": "string",
+              "description": "Optional archive-relative markdown path. When omitted, resolves manifest-first canonical markdown."
+            },
+            "maxImages": {
+              "type": "number",
+              "description": "Optional cap for returned images. Defaults to 12, clamped to 1..50."
+            }
+          },
+          "required": ["archivePath"]
+        }
+      },
+      {
+        "name": "mdzip_list_entries",
+        "displayName": "List MDZip Entries",
+        "modelDescription": "List all non-directory entries inside an .mdz archive. Advanced inspection tool; prefer mdzip_review_document for default review workflows.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "mdzListEntries",
+        "icon": "$(list-tree)",
+        "tags": ["mdzip", "mdz"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "archivePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the .mdz file."
+            }
+          },
+          "required": ["archivePath"]
+        }
+      },
+      {
+        "name": "mdzip_search_text",
+        "displayName": "Search MDZip Text",
+        "modelDescription": "Search UTF-8 text entries inside an .mdz archive. Use this directly for grep/find/search requests.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "mdzSearchText",
+        "icon": "$(search)",
+        "tags": ["mdzip", "mdz"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "archivePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the .mdz file."
+            },
+            "query": {
+              "type": "string",
+              "description": "Text or regular expression to search for inside archive text entries."
+            },
+            "caseSensitive": {
+              "type": "boolean",
+              "description": "Whether matching is case-sensitive. Defaults to false."
+            },
+            "regex": {
+              "type": "boolean",
+              "description": "Interpret query as a JavaScript regular expression. Defaults to false."
+            },
+            "maxResults": {
+              "type": "number",
+              "description": "Maximum number of matching lines to return. Defaults to 100, clamped to 1..1000."
+            }
+          },
+          "required": ["archivePath", "query"]
+        }
+      },
+      {
+        "name": "mdzip_read_text",
+        "displayName": "Read MDZip Text Entry",
+        "modelDescription": "Read a UTF-8 text entry from an .mdz archive by archive-relative path. Advanced inspection tool; prefer mdzip_review_document for first read.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "mdzReadText",
+        "icon": "$(file-text)",
+        "tags": ["mdzip", "mdz"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "archivePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the .mdz file."
+            },
+            "entryPath": {
+              "type": "string",
+              "description": "Archive-relative path (for example: manifest.json or index.md)."
+            }
+          },
+          "required": ["archivePath", "entryPath"]
+        }
+      },
+      {
+        "name": "mdzip_read_image",
+        "displayName": "Read MDZip Image",
+        "modelDescription": "Read an image entry from an .mdz archive and return it directly as image content (no extraction required). Advanced inspection tool.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "mdzReadImage",
+        "icon": "$(file-media)",
+        "tags": ["mdzip", "mdz"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "archivePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the .mdz file."
+            },
+            "entryPath": {
+              "type": "string",
+              "description": "Archive-relative image path (for example: images/diagram.png)."
+            }
+          },
+          "required": ["archivePath", "entryPath"]
+        }
+      },
+      {
+        "name": "mdzip_read_markdown_embedded_images",
+        "displayName": "Read MDZip Markdown with Embedded Images",
+        "modelDescription": "Read markdown from an .mdz entry and embed archive images as data URLs directly in the markdown text. Prefer mdzip_review_document for general review tasks.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "mdzReadMarkdownEmbeddedImages",
+        "icon": "$(preview)",
+        "tags": ["mdzip", "mdz"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "archivePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the .mdz file."
+            },
+            "entryPath": {
+              "type": "string",
+              "description": "Optional archive-relative markdown path. When omitted, resolves manifest-first canonical markdown."
+            }
+          },
+          "required": ["archivePath"]
+        }
+      },
+      {
+        "name": "mdzip_upsert_canonical_document",
+        "displayName": "Update MDZip Canonical Document",
+        "modelDescription": "Write path for markdown updates. Updates manifest-first canonical markdown and returns changed paths plus post-write validation. Requires expectedContentHash (from a prior mdzip_review_document call) and fails with a CONTENT_CONFLICT error instead of overwriting if the on-disk canonical content has changed since that read.",
+        "canBeReferencedInPrompt": false,
+        "toolReferenceName": "mdzUpsertCanonicalDocument",
+        "icon": "$(save)",
+        "tags": ["mdzip", "mdz"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "archivePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the .mdz file."
+            },
+            "content": {
+              "type": "string",
+              "description": "New markdown content for the canonical entrypoint document."
+            },
+            "expectedContentHash": {
+              "type": "string",
+              "description": "The canonicalContentHash returned by the most recent mdzip_review_document call for this archive."
+            }
+          },
+          "required": ["archivePath", "content", "expectedContentHash"]
+        }
+      }
+    ],
     "languages": [
       {
         "id": "mdzip",
@@ -136,7 +315,11 @@
       },
       {
         "command": "mdzip.enableClaudeMcp",
-        "title": "MDZip: Enable Claude Code MCP Server"
+        "title": "MDZip: Enable Claude Code MCP Server (Workspace)"
+      },
+      {
+        "command": "mdzip.enableClaudeUserMcp",
+        "title": "MDZip: Enable Claude Code MCP Server (User)"
       },
       {
         "command": "mdzip.copyClaudeMcpConfigSnippet",
@@ -238,6 +421,9 @@
         },
         {
           "command": "mdzip.enableClaudeMcp"
+        },
+        {
+          "command": "mdzip.enableClaudeUserMcp"
         },
         {
           "command": "mdzip.copyClaudeMcpConfigSnippet"
@@ -367,6 +553,10 @@
         },
         {
           "command": "mdzip.enableClaudeMcp",
+          "when": "resourceExtname == .md || resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.enableClaudeUserMcp",
           "when": "resourceExtname == .md || resourceExtname == .mdz"
         },
         {
