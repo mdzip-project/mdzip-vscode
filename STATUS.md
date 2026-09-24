@@ -1,5 +1,41 @@
 Status: awaiting-test
-Last: v1.3.88 — description says "single document mode" about .mdz only; v1.3.87 made description/README intro cover .md; extension retitled "MDZip Editor" with editors "MDZip" and "Markdown" (v1.3.86); needs a look in real VS Code
+Last: v1.3.94 — linked images for .md (#14) get the Markdown/HTML + alignment dialog; on published @mdzip/editor 1.4.6; needs a try in real VS Code
+
+v1.3.94: the webview uses the editor's new `context.promptImageInsert` /
+`formatImageInsert` (@mdzip/editor 1.4.6) so linked images get the same dialog a
+`.mdz` paste does. To make cancel leave nothing on disk the host protocol is now
+two-step: `markdownImageRequest` → host picks/decides and replies `prepared`
+(nothing written; the copy is staged per request) → dialog in the webview →
+`markdownImageCommit {commit}` → host writes (or drops) and replies
+`markdownImageCommitted`. Pins `@mdzip/editor` `^1.4.6` from the registry
+(local link removed, lockfile refreshed, VSIX rebuilt).
+
+v1.3.91: toolbar Insert Image (not paste — no bytes to place) gains "Link to an
+existing image": open dialog starting at the document's folder, then a relative
+link to the file where it is. Only inside the document's folder tree — the
+editor rejects `../` asset paths (`ERR_PATH_INVALID: path traversal`, checked),
+so the preview couldn't show one; outside files get an error pointing at the
+copy choices. `relativeImagePath` is unit-tested; the dialog flow isn't.
+
+v1.3.89 (#14): the webview now sets `onConversionRequested` (nav-button
+conversion keeps the editor's built-in dialog). For an image paste/insert
+into a `.md` it posts `markdownImageRequest`; the host
+(`_handleMarkdownImageRequest`) shows a QuickPick (beside / subfolder /
+convert), asks for the subfolder name (default `images`), writes the file with
+a collision-free name, and answers `markdownImageResult`. The result carries
+the image as a data URI, registered in the webview's disk-image map before the
+`![](…)` link is inserted so the preview shows it (relative URLs don't load in
+the webview). v1.3.90: that map alone wasn't enough — the editor strips the `src`
+of any relative image that isn't a workspace asset, so no error event ever
+fires for the fallback. The webview now calls `editor.addAsset(path, bytes)`
+before inserting the link (verified in a jsdom mount: without it the `<img>`
+has no `src`, with it it resolves; the workspace stays `markdown`). Convert runs the editor's own convert-to-.mdz. Unsaved/non-file
+documents fall back to the built-in dialog. Pure helpers + payload validation
+are in `mdLinkedImage.ts` (6 tests); the host prompts and webview wiring are
+**not** unit-tested — try: paste an image into a saved `.md`, insert via the
+toolbar picker, each of the three choices, cancelling at each step, a name
+collision, and an oversized file.
+
 
 v1.3.87: `package.json`'s `description` (the Marketplace card and Extensions
 view subtitle) and the README's opening sentence described `.mdz` only. Now:

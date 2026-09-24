@@ -6,6 +6,23 @@ import { logInfo, logError } from './mdzLog';
 import { MdzStatsStatusBar } from './mdzStatsStatusBar';
 import { MARKDOWN_ICON_ID, MDZ_ICON_ID, parseStatsReport } from './mdzStats';
 import {
+  DEFAULT_IMAGE_SUBFOLDER,
+  IMAGE_EXTENSIONS,
+  MAX_LINKED_IMAGE_BYTES,
+  imageMimeType,
+  isImageFileName,
+  encodeImageSrc,
+  imageAltText,
+  parseMarkdownImageCommit,
+  parseMarkdownImageRequest,
+  relativeImagePath,
+  sanitizeImageFileName,
+  uniqueImageFileName,
+  validateImageSubfolder,
+  type MarkdownImageRequest,
+  type MarkdownImageResult,
+} from './mdLinkedImage';
+import {
   buildNewArchiveBytesWithTitle,
   displayTitleFromManifest,
   fileBaseNameFromPath,
@@ -277,6 +294,8 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
     // Handle messages from the webview
     let convertSaveTimer: ReturnType<typeof setTimeout> | null = null;
+    // Linked images staged by 'markdownImageRequest', written on 'markdownImageCommit'.
+    const pendingImageWrites = new Map<number, PendingImageWrite>();
     // Build the payload once (expensive), but re-post it on every call. A
     // postMessage sent before the webview's script has registered its
     // message listener (e.g. resolveCustomEditor's eager first send, below)
@@ -351,6 +370,57 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
             vscode.window.showErrorMessage(message.message);
           }
           break;
+
+        case 'markdownImageRequest': {
+          const request = parseMarkdownImageRequest(message);
+          const requestId = typeof message.requestId === 'number' ? message.requestId : undefined;
+          if (!request) {
+            // Always answer a well-formed id, or the webview waits forever.
+            if (requestId !== undefined) {
+              void webviewPanel.webview.postMessage({
+                type: 'markdownImageResult',
+                requestId,
+                result: { action: 'error', message: 'That image could not be added (it may be too large).' } satisfies MarkdownImageResult,
+              });
+            }
+            break;
+          }
+          let result: MarkdownImageResult;
+          try {
+            pendingImageWrites.delete(request.requestId);
+            result = await this._handleMarkdownImageRequest(document, request, (write) => {
+              pendingImageWrites.set(request.requestId, write);
+            });
+          } catch (error) {
+            result = { action: 'error', message: `Could not add the image: ${error instanceof Error ? error.message : String(error)}` };
+          }
+          void webviewPanel.webview.postMessage({ type: 'markdownImageResult', requestId: request.requestId, result });
+          break;
+        }
+
+        case 'markdownImageCommit': {
+          const commit = parseMarkdownImageCommit(message);
+          if (!commit) {
+            break;
+          }
+          const pending = pendingImageWrites.get(commit.requestId);
+          pendingImageWrites.delete(commit.requestId);
+          let reply: { ok: boolean; message?: string } = { ok: true };
+          if (commit.commit && pending) {
+            try {
+              if (await this._uriExists(pending.fileUri)) {
+                reply = { ok: false, message: 'A file with that name appeared in the meantime; try again.' };
+              } else {
+                await vscode.workspace.fs.createDirectory(pending.directory);
+                await vscode.workspace.fs.writeFile(pending.fileUri, pending.bytes);
+              }
+            } catch (error) {
+              reply = { ok: false, message: `Could not save the image: ${error instanceof Error ? error.message : String(error)}` };
+            }
+          }
+          void webviewPanel.webview.postMessage({ type: 'markdownImageCommitted', requestId: commit.requestId, ...reply });
+          break;
+        }
 
         case 'pasteImage':
           if (typeof message.archivePath !== 'string' || typeof message.base64Data !== 'string') {
@@ -1332,6 +1402,151 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     }
   }
 
+  // An image pasted/inserted into a plain .md (mdzip-vscode#14): let the user
+  // keep the file as .md with a linked image, or convert to .mdz as before.
+  // Returns what the webview should do; all prompts and the file write happen
+  // here because the webview has no filesystem access.
+  private async _handleMarkdownImageRequest(
+    document: MdzDocument,
+    request: MarkdownImageRequest,
+    stage: (write: PendingImageWrite) => void
+  ): Promise<MarkdownImageResult> {
+    // Linked images need a folder on disk to write into.
+    if (document.sourceFormat !== 'markdown' || document.uri.scheme !== 'file') {
+      return { action: 'builtin' };
+    }
+
+    type Choice = vscode.QuickPickItem & { id: 'existing' | 'same' | 'subfolder' | 'convert' };
+    // Pasting already has the image in hand, so the choices are about where it
+    // goes. The toolbar's Insert Image has nothing yet, so it can also point at
+    // a file that's already on disk, and the copy choices start by picking one.
+    const picking = request.kind === 'image-picker';
+    const choices: Choice[] = picking
+      ? [
+          { id: 'existing', label: 'Link to an existing image', description: 'Pick a file in this folder or a subfolder; nothing is copied' },
+          { id: 'same', label: 'Copy an image next to the document', description: 'Pick a file, copy it here, then link to it' },
+          { id: 'subfolder', label: 'Copy an image into a subfolder', description: `Pick a file, copy it into ${DEFAULT_IMAGE_SUBFOLDER}/, then link to it` },
+          { id: 'convert', label: 'Convert to .mdz and embed an image', description: 'Pick a file and pack it into a portable MDZip document' },
+        ]
+      : [
+          { id: 'same', label: 'Save beside the document', description: 'Keep as .md, link to the image' },
+          { id: 'subfolder', label: 'Save in a subfolder', description: `Keep as .md, link to ${DEFAULT_IMAGE_SUBFOLDER}/…` },
+          { id: 'convert', label: 'Convert to .mdz', description: 'Embed the image in a portable MDZip document' },
+        ];
+    const choice = await vscode.window.showQuickPick<Choice>(
+      choices,
+      { title: 'Add image', placeHolder: picking ? 'What should happen to the image?' : 'Where should the image go?' }
+    );
+    if (!choice) {
+      return { action: 'cancel' };
+    }
+    if (choice.id === 'existing') {
+      return this._linkExistingImage(document);
+    }
+    if (choice.id === 'convert') {
+      return { action: 'convert' };
+    }
+
+    let subfolder = '';
+    if (choice.id === 'subfolder') {
+      const entered = await vscode.window.showInputBox({
+        title: 'Image subfolder',
+        prompt: 'Folder next to the document to save the image in',
+        value: DEFAULT_IMAGE_SUBFOLDER,
+        validateInput: (value) => validateImageSubfolder(value),
+      });
+      if (entered === undefined) {
+        return { action: 'cancel' };
+      }
+      subfolder = entered.trim();
+    }
+
+    let fileName: string;
+    let bytes: Uint8Array;
+    if (request.kind === 'image-file') {
+      fileName = sanitizeImageFileName(request.fileName ?? 'image');
+      bytes = Uint8Array.from(Buffer.from(request.base64Data ?? '', 'base64'));
+    } else {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        openLabel: 'Insert image',
+        filters: { Images: IMAGE_EXTENSIONS },
+      });
+      if (!picked?.[0]) {
+        return { action: 'cancel' };
+      }
+      fileName = sanitizeImageFileName(path.posix.basename(picked[0].path));
+      bytes = await vscode.workspace.fs.readFile(picked[0]);
+    }
+    if (bytes.length === 0) {
+      return { action: 'error', message: 'The image is empty.' };
+    }
+    if (bytes.length > MAX_LINKED_IMAGE_BYTES) {
+      return { action: 'error', message: 'The image is too large to add (limit 25 MB).' };
+    }
+    if (!isImageFileName(fileName)) {
+      // Clipboard images can arrive without an extension; the type is unknown, so don't guess.
+      return { action: 'error', message: 'Choose a PNG, JPEG, GIF, WebP, SVG, BMP or AVIF image.' };
+    }
+
+    const documentDirectory = vscode.Uri.joinPath(document.uri, '..');
+    const targetDirectory = subfolder ? vscode.Uri.joinPath(documentDirectory, subfolder) : documentDirectory;
+    const finalName = await uniqueImageFileName(fileName, (candidate) =>
+      this._uriExists(vscode.Uri.joinPath(targetDirectory, candidate))
+    );
+    // Written only when the webview commits, after the insert dialog.
+    stage({ directory: targetDirectory, fileUri: vscode.Uri.joinPath(targetDirectory, finalName), bytes });
+
+    const relativePath = subfolder ? `${subfolder}/${finalName}` : finalName;
+    return {
+      action: 'prepared',
+      relativePath,
+      src: encodeImageSrc(relativePath),
+      fileName: finalName,
+      altText: imageAltText(finalName),
+      dataUri: `data:${imageMimeType(finalName)};base64,${Buffer.from(bytes).toString('base64')}`,
+    };
+  }
+
+  // Points at an image already on disk inside the document's folder tree — no
+  // copy. (The preview can only show images under the document's folder, so a
+  // file elsewhere is refused with a pointer to the copy choices.)
+  private async _linkExistingImage(document: MdzDocument): Promise<MarkdownImageResult> {
+    const documentDirectory = vscode.Uri.joinPath(document.uri, '..');
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      openLabel: 'Insert image',
+      defaultUri: documentDirectory,
+      filters: { Images: IMAGE_EXTENSIONS },
+    });
+    if (!picked?.[0]) {
+      return { action: 'cancel' };
+    }
+    const relativePath = relativeImagePath(documentDirectory.path, picked[0].path);
+    if (!relativePath) {
+      return {
+        action: 'error',
+        message: 'That image is outside the document folder, so it cannot be linked in place. Move it inside, or use "Save beside the document" to copy it.',
+      };
+    }
+    const fileName = path.posix.basename(relativePath);
+    if (!isImageFileName(fileName)) {
+      return { action: 'error', message: 'Choose a PNG, JPEG, GIF, WebP, SVG, BMP or AVIF image.' };
+    }
+    const bytes = await vscode.workspace.fs.readFile(picked[0]);
+    if (bytes.length === 0 || bytes.length > MAX_LINKED_IMAGE_BYTES) {
+      return { action: 'error', message: bytes.length === 0 ? 'The image is empty.' : 'The image is too large to add (limit 25 MB).' };
+    }
+    return {
+      action: 'prepared',
+      relativePath,
+      src: encodeImageSrc(relativePath),
+      fileName,
+      altText: imageAltText(fileName),
+      dataUri: `data:${imageMimeType(fileName)};base64,${Buffer.from(bytes).toString('base64')}`,
+    };
+  }
+
   private async _promptToConvertMarkdownForEmbeddedImage(
     document: MdzDocument,
     message: { archivePath: string; base64Data: string }
@@ -1478,11 +1693,19 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 // Message types
 // ---------------------------------------------------------------------------
 
+interface PendingImageWrite {
+  directory: vscode.Uri;
+  fileUri: vscode.Uri;
+  bytes: Uint8Array;
+}
+
 interface WebviewMessage {
   type:
     | 'ready'
     | 'edit'
     | 'pasteImage'
+    | 'markdownImageRequest'
+    | 'markdownImageCommit'
     | 'setTitle'
     | 'removeOrphanedAsset'
     | 'openPath'
@@ -1503,6 +1726,9 @@ interface WebviewMessage {
   archivePath?: string;
   archiveBase64?: string;
   base64Data?: string;
+  kind?: string;
+  fileName?: string;
+  commit?: boolean;
   currentText?: string;
   currentPath?: string;
   currentPathType?: 'markdown' | 'text' | 'image' | 'binary';

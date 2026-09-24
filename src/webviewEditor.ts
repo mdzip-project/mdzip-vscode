@@ -2,12 +2,15 @@ import {
   MdzipWorkspaceView,
   computeDocumentStats,
   type MdzipColorScheme,
+  type MdzipConversionAction,
+  type MdzipConversionContext,
   type MdzipSourceFormat,
   type MdzipWorkspaceLayout,
   type MdzipWorkspaceSnapshot,
 } from '@mdzip/editor';
 import { mdzipMermaidExtension } from '@mdzip/editor/mermaid';
 import { buildStatsReport } from './mdzStats';
+import { type MarkdownImageResult } from './mdLinkedImage';
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
@@ -174,6 +177,91 @@ function updateDiskImageMap(assets: unknown[]): void {
   }
 }
 
+// Pasting/inserting an image into a plain .md: the editor asks the host how to
+// handle it (linked file vs. convert to .mdz). The host owns the prompts and
+// the file write. For a linked image it's two steps, so cancelling the
+// Markdown/HTML insert dialog leaves nothing on disk: the host *prepares* the
+// image (choice + target), the editor's own dialog runs here, then the host is
+// told to commit (write) or drop it.
+const pendingImageRequests = new Map<number, (result: MarkdownImageResult) => void>();
+const pendingImageCommits = new Map<number, (reply: { ok: boolean; message?: string }) => void>();
+let nextImageRequestId = 1;
+
+function requestMarkdownImage(request: { kind: 'image-file' | 'image-picker'; fileName?: string; base64Data?: string }): Promise<{ requestId: number; result: MarkdownImageResult }> {
+  return new Promise((resolve) => {
+    const requestId = nextImageRequestId++;
+    pendingImageRequests.set(requestId, (result) => resolve({ requestId, result }));
+    vscode.postMessage({ type: 'markdownImageRequest', requestId, ...request });
+  });
+}
+
+function commitMarkdownImage(requestId: number, commit: boolean): Promise<{ ok: boolean; message?: string }> {
+  return new Promise((resolve) => {
+    pendingImageCommits.set(requestId, resolve);
+    vscode.postMessage({ type: 'markdownImageCommit', requestId, commit });
+  });
+}
+
+function reportImageFailure(message: string): void {
+  vscode.postMessage({ type: 'workspaceFailed', message });
+}
+
+async function handleConversionRequested(
+  action: MdzipConversionAction,
+  context: MdzipConversionContext
+): Promise<boolean> {
+  // The nav button keeps the editor's built-in convert dialog.
+  if (action.kind === 'navigation') { return false; }
+  const request = action.kind === 'image-file'
+    ? {
+        kind: 'image-file' as const,
+        fileName: action.file.name || 'image',
+        base64Data: bytesToBase64(new Uint8Array(await action.file.arrayBuffer())),
+      }
+    : { kind: 'image-picker' as const };
+  const { requestId, result } = await requestMarkdownImage(request);
+  switch (result.action) {
+    case 'builtin':
+      return false;
+    case 'convert':
+      await context.convertToMdz();
+      return true;
+    case 'prepared': {
+      const bytes = base64ToBytes(result.dataUri.split(',')[1] ?? '');
+      // The same Markdown-vs-HTML / alt text / size / alignment flow a .mdz gets.
+      let decision = null;
+      try {
+        decision = await context.promptImageInsert({ bytes, fileName: result.fileName, altText: result.altText });
+      } catch (error) {
+        reportImageFailure(error instanceof Error ? error.message : String(error));
+      }
+      const commit = await commitMarkdownImage(requestId, decision !== null);
+      if (!decision) { return true; }
+      if (!commit.ok) {
+        reportImageFailure(commit.message ?? 'Could not save the image.');
+        return true;
+      }
+      // The preview only resolves relative images that are workspace assets
+      // (it strips the src of anything else), so register the file as one
+      // before its link is inserted. It stays a .md — this doesn't touch the text.
+      try {
+        await editor?.addAsset(result.relativePath, bytes);
+      } catch (error) {
+        reportImageFailure(`The image was saved, but the preview could not load it: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (!await context.insertMarkdown(context.formatImageInsert(result.src, decision))) {
+        reportImageFailure('The image was saved, but its link could not be inserted.');
+      }
+      return true;
+    }
+    case 'error':
+      reportImageFailure(result.message);
+      return true;
+    default:
+      return true;
+  }
+}
+
 const loadingEl = document.getElementById('mdzip-loading');
 
 // Lazy document text: documents tagged lazyText by the host get a readText()
@@ -239,6 +327,24 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
     if (resolve) {
       pendingTextRequests.delete(message.requestId);
       resolve(message.text);
+    }
+    return;
+  }
+  if ((message as { type?: string })?.type === 'markdownImageResult') {
+    const { requestId, result } = message as unknown as { requestId: number; result: MarkdownImageResult };
+    const resolve = pendingImageRequests.get(requestId);
+    if (resolve) {
+      pendingImageRequests.delete(requestId);
+      resolve(result);
+    }
+    return;
+  }
+  if ((message as { type?: string })?.type === 'markdownImageCommitted') {
+    const { requestId, ok, message: reason } = message as unknown as { requestId: number; ok: boolean; message?: string };
+    const resolve = pendingImageCommits.get(requestId);
+    if (resolve) {
+      pendingImageCommits.delete(requestId);
+      resolve({ ok, message: reason });
     }
     return;
   }
@@ -480,6 +586,7 @@ function createEditor(
     onSnapshotChanged: (snapshot) => {
       scheduleStatsReport(snapshot);
     },
+    onConversionRequested: handleConversionRequested,
     onFailed: (error) => {
       vscode.postMessage({
         type: 'workspaceFailed',

@@ -1,5 +1,35 @@
 # Change Log
 
+## [1.3.94] - 2026-09-24
+
+### Added
+- A linked image added to a `.md` now goes through the same insert dialog a `.mdz` gets: Markdown or HTML, alt text, size and alignment (#14). Cancelling the dialog writes nothing. Needs `@mdzip/editor` 1.4.6.
+
+## [1.3.93] - 2026-09-24
+
+### Changed
+- "Link to an existing image" now says the file can be in the document's folder or a subfolder.
+
+## [1.3.92] - 2026-09-24
+
+### Changed
+- The Insert Image choices on a `.md` now say what they do when you pick a file first ("Copy an image next to the document", "Copy an image into a subfolder", "Convert to .mdz and embed an image"); the paste wording is unchanged.
+
+## [1.3.91] - 2026-09-24
+
+### Added
+- Insert Image on a `.md` can now **link to an existing image** in the document's folder tree — pick the file and a relative link is inserted, with no copy (#14). An image outside the document's folder is refused with a pointer to the copy options, since the preview can't show it.
+
+## [1.3.90] - 2026-09-24
+
+### Fixed
+- A linked image added to a `.md` (#14) now shows in the preview immediately; in 1.3.89 it appeared as a broken image until the document was reopened.
+
+## [1.3.89] - 2026-09-24
+
+### Added
+- Pasting or inserting an image into a `.md` file now asks where it should go: beside the document, in a subfolder (default `images`), or convert to `.mdz` as before. The first two keep the file as `.md` and insert a relative link (#14).
+
 ## [1.3.88] - 2026-09-24
 
 ### Changed
