@@ -1,5 +1,87 @@
-Status: ready-to-commit
-Last: v1.3.81 on published @mdzip/editor 1.4.5 — #13 workspace links, in-page #heading anchors, duplicate-tail fix, spelling hint hidden; full test run green, VSIX rebuilt
+Status: awaiting-test
+Last: v1.3.88 — description says "single document mode" about .mdz only; v1.3.87 made description/README intro cover .md; extension retitled "MDZip Editor" with editors "MDZip" and "Markdown" (v1.3.86); needs a look in real VS Code
+
+v1.3.87: `package.json`'s `description` (the Marketplace card and Extensions
+view subtitle) and the README's opening sentence described `.mdz` only. Now:
+"Edit MDZip (.mdz) files in single document mode — Markdown plus its images
+in one portable file — with live preview. Also opens plain Markdown (.md)
+files in the same editor via Open With." ("Single document mode" is an .mdz
+limitation — no project mode yet, #7 — so it sits by the .mdz wording, not the .md.) It says "via Open With" deliberately: the
+`.md` editor is `priority: option`, not the default, and the README already
+notes packaged-image/manifest-title features still need `.mdz`.
+
+v1.3.86: VS Code labels each custom editor in the picker "<editor
+displayName> - <extension displayName>". Both editors were "MDZip Editor" and
+the extension "MDZip (.mdz) Editor", giving "MDZip Editor - MDZip (.mdz)
+Editor". Now the extension is "MDZip Editor" and the editors are "MDZip"
+(`mdzip.mdzEditor`) and "Markdown" (`mdzip.mdEditor`): "MDZip - MDZip Editor"
+for `.mdz`, "Markdown - MDZip Editor" for `.md`. Display names only — ids and
+selectors are untouched. **The extension's `displayName` is the public
+Marketplace title** — confirm the listing name before publishing. Also fixed
+the one in-code mention (the "search the Extensions view" message).
+
+(v1.3.85, previously:) status bar stats tooltip names the Markdown entry
+counted inside an .mdz; the icon fix (1.3.84) was confirmed in real VS Code.
+
+The 1.3.84 icon alignment/spacing was confirmed in real VS Code after a
+**Reload Window** (contributed icon fonts are only re-read at window load —
+"Restart Extensions" isn't enough). v1.3.85: the tooltip's first lines are
+the file on disk, then `Document: <archive path>` for an .mdz. Only the
+webview knows the current entry, so the report carries it (`entry`); it's
+omitted for a plain .md, whose entry name is synthetic. The report-building
+logic moved into `mdzStats.ts` (`buildStatsReport`) so that distinction is
+unit-tested.
+
+## Status bar document statistics (#12)
+
+One right-aligned item, `<mark> 1,234 words` (tooltip: words, characters,
+characters without spaces, lines, reading time at 200 wpm), for the active
+MDZip editor tab — `.mdz` and `.md` (`mdzip.mdEditor`) both. Counts the
+document currently shown, not the whole archive.
+
+**The mark** (v1.3.83): status bar text can only show codicons or a glyph
+from a contributed icon font, and the MDZip mark isn't a codicon. So
+`media/icons/mdzip-icons.woff` (built in `../mdzip-mark/font/`, which also
+holds the open-folder and Markdown variants) is contributed via
+`contributes.icons` (`mdzip-logo`, `mdzip-logo-open`, `mdzip-markdown`), and
+the item's text is `$(mdzip-logo) …` for `.mdz`, `$(mdzip-markdown) …` for
+`.md`. The glyphs are *traced* from the SVG marks (a font can't hold strokes
+or white fills), so they're close to, not identical to, the artwork. A test
+pins the code's icon ids, `package.json`'s `contributes.icons`, and the font
+file together (a typo in any would silently render nothing), and checks the
+font isn't excluded from the VSIX. The glyph was checked rendering in Chromium
+at 14–64px on light, dark and coloured backgrounds, but **not in VS Code's
+status bar itself** — that's the thing to look at.
+
+- **Where the numbers come from**: the webview (`webviewEditor.ts`) already
+  bundles `@mdzip/editor`, so it calls `computeDocumentStats` on
+  `onSnapshotChanged` (debounced 200ms, skipped when path+text are unchanged
+  — that event also fires for selection moves) and posts a `documentStats`
+  report. Importing the editor into the extension host instead would have
+  dragged its whole DOM-dependent view into the Node bundle.
+- **Guards**: over 3M characters the count is skipped (`too-large`) so typing
+  stays responsive; non-Markdown entries (image/binary selected) report
+  `none`; the host validates the untrusted payload (`parseStatsReport`).
+- **Not repeating Office Viewer's stale item** (the leftover `Line 66 Count
+  2278` seen earlier): `mdzStatsStatusBar.ts` derives visibility from the tab
+  model (`tabGroups.activeTabGroup.activeTab.input` being a `TabInputCustom`
+  of ours) on every tab change, rather than tracking show/hide by hand. Diff
+  views and every other tab type hide it. Reports are stored per document URI,
+  so a document can never show another's numbers, `forget()` drops a report
+  when its last panel closes, and `dispose()` (registered with the provider)
+  unsubscribes and disposes the item.
+- **Tests** (`mdzStats.test.cjs`, 20): report parsing/formatting, plus the
+  visibility rules against an extended `vscode` mock. Confirmed two
+  mutations fail them: showing a stale item when the active tab isn't ours (4
+  failures) and `dispose()` not unsubscribing (1). Full `npm test` green.
+- **Not verified in real VS Code** — no API to read status bar items, so it's
+  untested end to end. Try: open a `.mdz`/`.md` (item appears, updates as you
+  type), switch to a text file (item disappears), close the document (gone),
+  open a diff, and confirm nothing lingers.
+- Deliberately left out: selection stats, a click action, and a setting to
+  turn it off (see #11's settings backlog).
+
+## Earlier in this batch (v1.3.79–1.3.81)
 
 v1.3.79 adds nothing of its own beyond rebuilding against `@mdzip/editor`'s
 new heading anchors (see its STATUS.md): `[x](#heading)` scrolls the

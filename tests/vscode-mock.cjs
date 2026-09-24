@@ -22,6 +22,12 @@ class Uri {
     return new Uri('file', p.replace(/\\/g, '/'));
   }
 
+  // Inverse of toString() below (`scheme://path`).
+  static parse(value) {
+    const match = /^([a-z][a-z0-9+.-]*):\/\/(.*)$/i.exec(value);
+    return match ? new Uri(match[1], match[2]) : new Uri('file', value);
+  }
+
   toString() {
     return `${this.scheme}://${this.path}`;
   }
@@ -58,10 +64,74 @@ class RelativePattern {
   }
 }
 
+// --- status bar / tab model (used by the stats status bar tests) ---
+// Tests drive it through globals: set global.__vscodeMockActiveTab to a
+// { input } (or undefined) and call global.__vscodeMockFireTabChange().
+class MarkdownString {
+  constructor(value) {
+    this.value = value;
+  }
+}
+
+// The bundle under test and the test file each load their own copy of this
+// mock, so anything they must agree on (instanceof, the listener set) lives on
+// a global shared between the copies.
+const TabInputCustom = (global.__vscodeMockTabInputCustom = global.__vscodeMockTabInputCustom
+  ?? class TabInputCustom {
+    constructor(uri, viewType) {
+      this.uri = uri;
+      this.viewType = viewType;
+    }
+  });
+
+const tabListeners = (global.__vscodeMockTabListeners = global.__vscodeMockTabListeners ?? new Set());
+global.__vscodeMockFireTabChange = () => {
+  for (const listener of [...tabListeners]) listener();
+};
+global.__vscodeMockStatusBarItems = global.__vscodeMockStatusBarItems ?? [];
+
+const window = {
+  createStatusBarItem(id, alignment, priority) {
+    const item = {
+      id,
+      alignment,
+      priority,
+      name: undefined,
+      text: '',
+      tooltip: undefined,
+      accessibilityInformation: undefined,
+      visible: false,
+      disposed: false,
+      show() { this.visible = true; },
+      hide() { this.visible = false; },
+      dispose() { this.disposed = true; this.visible = false; },
+    };
+    global.__vscodeMockStatusBarItems.push(item);
+    return item;
+  },
+  tabGroups: {
+    get activeTabGroup() {
+      return { activeTab: global.__vscodeMockActiveTab };
+    },
+    onDidChangeTabs(listener) {
+      tabListeners.add(listener);
+      return { dispose: () => tabListeners.delete(listener) };
+    },
+    onDidChangeTabGroups(listener) {
+      tabListeners.add(listener);
+      return { dispose: () => tabListeners.delete(listener) };
+    },
+  },
+};
+
 module.exports = {
   Uri,
   EventEmitter,
   RelativePattern,
+  MarkdownString,
+  TabInputCustom,
+  StatusBarAlignment: { Left: 1, Right: 2 },
+  window,
   FilePermission: { Readonly: 1 },
   workspace: {
     fs: {

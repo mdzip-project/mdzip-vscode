@@ -1,6 +1,6 @@
 # MDZip VS Code Extension
 
-Visual Studio Code extension to read and write MDZip (`.mdz`) files, including packaged images.
+Visual Studio Code extension to edit MDZip (`.mdz`) files — Markdown plus its images in one portable file — with live preview. It also opens plain Markdown (`.md`) files in the same editor as an **Open With** choice.
 
 ## Features
 

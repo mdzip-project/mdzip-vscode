@@ -464,7 +464,7 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
 
       if (!opened) {
         vscode.window.showInformationMessage(
-          'Open the Extensions view and search for "MDZip (.mdz) Editor" to review extension details and bundled MCP setup.'
+          'Open the Extensions view and search for "MDZip Editor" to review extension details and bundled MCP setup.'
         );
       }
     })

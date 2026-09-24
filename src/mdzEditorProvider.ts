@@ -3,6 +3,8 @@ import * as path from 'path';
 import { MdzDocument } from './mdzDocument';
 import { MdzDiffPanel } from './mdzDiffPanel';
 import { logInfo, logError } from './mdzLog';
+import { MdzStatsStatusBar } from './mdzStatsStatusBar';
+import { MARKDOWN_ICON_ID, MDZ_ICON_ID, parseStatsReport } from './mdzStats';
 import {
   buildNewArchiveBytesWithTitle,
   displayTitleFromManifest,
@@ -134,6 +136,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
     return vscode.Disposable.from(
       ...registrations,
+      provider._statsBar,
       new vscode.Disposable(() => {
         if (MdzEditorProvider._instance === provider) {
           MdzEditorProvider._instance = undefined;
@@ -141,6 +144,11 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       })
     );
   }
+
+  private readonly _statsBar = new MdzStatsStatusBar([
+    { viewType: MdzEditorProvider.VIEW_TYPE, iconId: MDZ_ICON_ID },
+    { viewType: MdzEditorProvider.MARKDOWN_VIEW_TYPE, iconId: MARKDOWN_ICON_ID },
+  ]);
 
   private constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -464,6 +472,14 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           }
           break;
 
+        case 'documentStats': {
+          const report = parseStatsReport(message.report);
+          if (report) {
+            this._statsBar.update(document.uri.toString(), report);
+          }
+          break;
+        }
+
         case 'openExternalLink':
           if (typeof message.href !== 'string') {
             return;
@@ -567,6 +583,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       const remaining = this._panelsByDocument.get(key);
       if (!remaining || remaining.size === 0) {
         this._splitLayoutUris.delete(key);
+        this._statsBar.forget(key);
       }
       void this._broadcastLayoutState(document.uri);
     });
@@ -1470,6 +1487,7 @@ interface WebviewMessage {
     | 'removeOrphanedAsset'
     | 'openPath'
     | 'openExternalLink'
+    | 'documentStats'
     | 'scrollSync'
     | 'modeChanged'
     | 'openSideBySide'
@@ -1494,6 +1512,7 @@ interface WebviewMessage {
   title?: string;
   path?: string;
   href?: string;
+  report?: unknown;
   ratio?: number;
   mode?: EditorMode;
   layout?: LayoutMode;

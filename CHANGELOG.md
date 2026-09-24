@@ -1,5 +1,40 @@
 # Change Log
 
+## [1.3.88] - 2026-09-24
+
+### Changed
+- Reworded the description so "single document mode" qualifies `.mdz` (where it applies), not the `.md` support.
+
+## [1.3.87] - 2026-09-24
+
+### Changed
+- The Marketplace description and README intro now say the extension edits `.md` as well as `.mdz` (the `.md` editor is an Open With choice, not the default). They previously described `.mdz` only.
+
+## [1.3.86] - 2026-09-24
+
+### Changed
+- The extension is now titled **MDZip Editor** (it was "MDZip (.mdz) Editor", which undersold an editor that also opens `.md`). The two editors get their own names, so the "Reopen Editor With…" / "Open With…" picker reads "MDZip - MDZip Editor" for `.mdz` files and "Markdown - MDZip Editor" for `.md`, instead of the repeated "MDZip Editor - MDZip (.mdz) Editor". The extension id and file associations are unchanged, so existing installs, defaults and "Open With" choices carry over.
+
+## [1.3.85] - 2026-09-24
+
+### Changed
+- The status bar statistics tooltip now names which Markdown file inside an `.mdz` archive the numbers are for (`Document: docs/chapter1.md`), and follows you as you switch between files in the archive. It previously showed only the archive's name.
+
+## [1.3.84] - 2026-09-24
+
+### Fixed
+- The status bar icon sat about 2px low next to its text and crowded it; it's raised to line up with the digits and has more space before the text.
+
+## [1.3.83] - 2026-09-24
+
+### Changed
+- The status bar statistics item shows the MDZip mark (`.mdz`) or the Markdown mark (`.md`) instead of the text "MDZip". The marks ship as a small icon font (`media/icons/mdzip-icons.woff`, contributed via `contributes.icons`) built in the `mdzip-mark` repo, which also carries an open-folder variant.
+
+## [1.3.82] - 2026-09-24
+
+### Added
+- **Document statistics in the status bar** (`MDZip · 1,234 words`, with characters, lines and reading time in the tooltip) for the active MDZip editor tab, `.mdz` and `.md` alike. It counts the document currently shown and updates as you type. The item is hidden whenever the active tab isn't an MDZip editor (including diff views), each document only ever shows its own numbers, and it's cleared when the document closes. Documents over 3 million characters show "large document" instead of counting. Closes #12.
+
 ## [1.3.81] - 2026-09-23
 
 ### Changed

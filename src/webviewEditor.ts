@@ -1,11 +1,13 @@
 import {
   MdzipWorkspaceView,
+  computeDocumentStats,
   type MdzipColorScheme,
   type MdzipSourceFormat,
   type MdzipWorkspaceLayout,
   type MdzipWorkspaceSnapshot,
 } from '@mdzip/editor';
 import { mdzipMermaidExtension } from '@mdzip/editor/mermaid';
+import { buildStatsReport } from './mdzStats';
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
@@ -359,6 +361,33 @@ new MutationObserver(() => {
 }).observe(document.body, { attributes: true, attributeFilter: ['data-vscode-theme-kind', 'class'] });
 
 
+// Status bar statistics (mdzip-vscode#12). onSnapshotChanged fires for every
+// workspace event — selection moves included — so debounce, and skip the count
+// entirely when the counted text hasn't changed.
+const STATS_DEBOUNCE_MS = 200;
+let statsTimer: number | undefined;
+let lastStatsSource: string | null = null; // source format + entry path
+let lastStatsText: string | null = null;
+
+function scheduleStatsReport(snapshot: MdzipWorkspaceSnapshot): void {
+  window.clearTimeout(statsTimer);
+  statsTimer = window.setTimeout(() => postStatsReport(snapshot), STATS_DEBOUNCE_MS);
+}
+
+function postStatsReport(snapshot: MdzipWorkspaceSnapshot): void {
+  const isMarkdown = snapshot.currentPathType === 'markdown';
+  // The source format is part of the key: converting a .md to an .mdz changes
+  // what the report says (the entry name) without touching the path or text.
+  const source = `${snapshot.sourceFormat}:${snapshot.currentPath}`;
+  if (isMarkdown && source === lastStatsSource && snapshot.currentText === lastStatsText) {
+    return;
+  }
+  lastStatsSource = isMarkdown ? source : null;
+  lastStatsText = isMarkdown ? snapshot.currentText : null;
+
+  vscode.postMessage({ type: 'documentStats', report: buildStatsReport(snapshot, computeDocumentStats) });
+}
+
 function postSnapshot(
   type: 'workspaceChanged' | 'workspaceSaved',
   bytes: Uint8Array,
@@ -447,6 +476,9 @@ function createEditor(
     },
     onSaved: (bytes, snapshot) => {
       postSnapshot('workspaceSaved', bytes, snapshot);
+    },
+    onSnapshotChanged: (snapshot) => {
+      scheduleStatsReport(snapshot);
     },
     onFailed: (error) => {
       vscode.postMessage({
