@@ -415,6 +415,10 @@ function createEditor(
     // ![alt](path). The HTML path uses portable `align` attributes, which
     // survive the preview sanitizer (it strips inline `style`).
     imageInsertMode: 'ask',
+    // VS Code runs with spell-check disabled and shows its own Cut/Copy/Paste-
+    // only menu for Shift+Right-Click, so the "Spelling Suggestions" hint
+    // would promise something that can never appear here.
+    showSpellingSuggestionsHint: false,
     // This is a live-editing host: the preview re-renders on every keystroke.
     // 'initial' keeps the first-load reveal animation but snaps packaged images
     // open on same-document edits, avoiding a loading pulse on each re-render.
@@ -449,6 +453,14 @@ function createEditor(
         type: 'workspaceFailed',
         message: error instanceof Error ? error.message : String(error),
       });
+    },
+    // A preview link that isn't another Markdown doc inside this archive —
+    // e.g. a relative link out to the surrounding workspace/repo. The
+    // webview has no filesystem access, so resolving and acting on it
+    // (open the file, reveal a folder) happens host-side; see 'openExternalLink'
+    // in mdzEditorProvider.ts.
+    onUnresolvedLinkClick: (href, snapshot) => {
+      vscode.postMessage({ type: 'openExternalLink', href, currentPath: snapshot.currentPath });
     },
   });
 }

@@ -253,6 +253,18 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
     webviewPanel.webview.options = {
       enableScripts: true,
+      // Omitting this defaults to the extension's own directory plus the
+      // current workspace folders — which breaks relative-path assets
+      // (images, etc.) for a plain .md/.mdz file opened outside any
+      // workspace folder that contains it (e.g. via "Open File" rather than
+      // "Open Folder"), since the file's own directory then isn't covered.
+      // Keep the defaults (extension dir + workspace folders) and add the
+      // document's own containing directory explicitly.
+      localResourceRoots: [
+        this.context.extensionUri,
+        vscode.Uri.joinPath(document.uri, '..'),
+        ...(vscode.workspace.workspaceFolders?.map((folder) => folder.uri) ?? []),
+      ],
     };
 
     // Handle messages from the webview
@@ -450,6 +462,13 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           if (document.currentPathType === 'binary') {
             await this._openArchivePathWithDefaultViewer(document, message.path);
           }
+          break;
+
+        case 'openExternalLink':
+          if (typeof message.href !== 'string') {
+            return;
+          }
+          await this._openWorkspaceRelativeLink(document.uri, message.href);
           break;
 
         case 'modeChanged':
@@ -1375,6 +1394,47 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     return true;
   }
 
+  // Mirrors VS Code's built-in Markdown preview: a link that doesn't resolve
+  // to another document inside this archive (see @mdzip/editor's
+  // onUnresolvedLinkClick) is resolved against the .mdz/.md file's own
+  // on-disk directory, not any archive-internal path structure — an .mdz
+  // document's internal folder layout doesn't correspond to anything real on
+  // disk. A file opens (Markdown forced into this extension's own preview
+  // mode, matching how the built-in previewer keeps you in preview as you
+  // click through linked docs; anything else via its default editor); a
+  // folder reveals in the Explorer; anything that resolves to neither is
+  // left inert. Archive-to-archive (.mdz) links are intentionally not
+  // special-cased here — out of scope (mdzip-vscode#13).
+  private async _openWorkspaceRelativeLink(documentUri: vscode.Uri, href: string): Promise<void> {
+    const decoded = decodeWorkspaceLinkHref(href);
+    if (!decoded) {
+      return;
+    }
+
+    const baseDir = vscode.Uri.joinPath(documentUri, '..');
+    const targetUri = decoded.startsWith('/') ? vscode.Uri.file(decoded) : vscode.Uri.joinPath(baseDir, decoded);
+
+    let stat: vscode.FileStat;
+    try {
+      stat = await vscode.workspace.fs.stat(targetUri);
+    } catch {
+      return; // Doesn't resolve to anything on disk — inert, matching current behavior.
+    }
+
+    if (stat.type === vscode.FileType.Directory) {
+      await vscode.commands.executeCommand('revealInExplorer', targetUri);
+      return;
+    }
+
+    if (/\.md$/i.test(targetUri.path)) {
+      MdzEditorProvider.markNextOpenInPreview(targetUri);
+      await vscode.commands.executeCommand('vscode.openWith', targetUri, MdzEditorProvider.MARKDOWN_VIEW_TYPE);
+      return;
+    }
+
+    await vscode.commands.executeCommand('vscode.open', targetUri);
+  }
+
   private async _writeArchiveEntryToTemp(
     documentUri: vscode.Uri,
     archivePath: string,
@@ -1409,6 +1469,7 @@ interface WebviewMessage {
     | 'setTitle'
     | 'removeOrphanedAsset'
     | 'openPath'
+    | 'openExternalLink'
     | 'scrollSync'
     | 'modeChanged'
     | 'openSideBySide'
@@ -1432,6 +1493,7 @@ interface WebviewMessage {
   message?: string;
   title?: string;
   path?: string;
+  href?: string;
   ratio?: number;
   mode?: EditorMode;
   layout?: LayoutMode;
@@ -1601,6 +1663,23 @@ function showFriendlySaveError(error: unknown, uri: vscode.Uri): void {
 
 function sanitizePathSegment(segment: string): string {
   return segment.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
+}
+
+// Strips a #fragment/?query suffix and percent-decodes an href from
+// @mdzip/editor's onUnresolvedLinkClick, returning null for an empty (or
+// fragment/query-only) result. Malformed percent-encoding falls back to the
+// undecoded string rather than throwing, matching how browsers treat a bad
+// escape in a normal navigation.
+export function decodeWorkspaceLinkHref(href: string): string | null {
+  const withoutHash = href.split('#')[0] ?? '';
+  const withoutQuery = withoutHash.split('?')[0] ?? '';
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(withoutQuery);
+  } catch {
+    decoded = withoutQuery;
+  }
+  return decoded || null;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

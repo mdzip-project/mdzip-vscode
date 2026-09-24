@@ -1,5 +1,35 @@
 # Change Log
 
+## [1.3.81] - 2026-09-23
+
+### Changed
+- `@mdzip/editor` bumped to `^1.4.5`.
+- **The editor context menu no longer shows a "Spelling Suggestions — Shift+Right-Click" hint.** It can't be true here: VS Code runs with spell-check disabled (its main window is created with `spellcheck: false`) and shows its own Cut/Copy/Paste-only menu for Shift+Right-Click, so no suggestions can ever appear in a webview. Uses `@mdzip/editor`'s new `showSpellingSuggestionsHint: false` option. Real spell-check in this extension would need a bundled dictionary and in-editor squiggles — not attempted.
+
+## [1.3.80] - 2026-09-23
+
+### Fixed
+- **Each keystroke appended another copy of the end of the document to the preview** (an extra heading + diagram per character typed, seen on a document of short sections). A bug in `@mdzip/editor`'s incremental preview reconciliation, present in its published 1.4.4 and so in the 1.3.77 build too — see its CHANGELOG. Fixed in `@mdzip/editor` 1.4.5.
+
+## [1.3.79] - 2026-09-23
+
+### Added
+- **In-page `#heading` links now work in the preview.** Headings get GitHub-style anchor ids and clicking `[text](#some-heading)` scrolls to it — including under this extension's progressive rendering, where the target may not be mounted yet. Comes from `@mdzip/editor` 1.4.5 (mdzip-editor#47).
+
+## [1.3.78] - 2026-09-23
+
+### Added
+- **Preview links to files/folders outside the current `.mdz`/`.md` archive now open or reveal them**, matching VS Code's built-in Markdown preview: a link resolving to a file on disk opens it (`.md` targets are forced into this extension's own preview mode, mirroring how the built-in previewer keeps you in preview as you click through linked docs; anything else opens via its default editor/app), a link resolving to a folder reveals it in the Explorer, and a link resolving to neither is left inert exactly as before. Resolved against the `.mdz`/`.md` file's own on-disk directory, not any archive-internal path structure. Uses `@mdzip/editor` 1.4.5's new `onUnresolvedLinkClick` hook. Archive-to-archive (`.mdz`-to-`.mdz`) links remain out of scope. Closes #13.
+
+## [1.3.77] - 2026-09-23
+
+### Fixed
+- **Relative images in a `.md`/`.mdz` file 403'd when the file was opened outside a matching workspace folder** (e.g. via "Open File" rather than "Open Folder"). The custom editor's webview never set `localResourceRoots`, so it fell back to VS Code's default (the extension's own directory plus the current workspace folders) — which doesn't include an arbitrary file's own containing directory when that directory isn't itself an open workspace folder. Now explicitly includes the document's own directory alongside the existing defaults.
+- **Editor and preview both jumping scroll position when starting to edit**, most visible on documents with images or a mermaid diagram. Fixed in `@mdzip/editor` 1.4.4 — see its own CHANGELOG for the root-cause writeup. Picked up via the `@mdzip/editor` dependency bump below.
+
+### Changed
+- `@mdzip/editor` bumped to `^1.4.4`, also bringing in its webview bundle-size reduction (~5.3MB → ~4.3MB, via curated highlight.js language imports) and front-matter rendering support.
+
 ## [1.3.63] - 2026-09-08
 
 > Consolidates local test builds 1.3.29–1.3.63 into the changes since the last published version (1.3.28) — not every intermediate build. Several fixes landed in `@mdzip/editor` / `@mdzip/core-js` and also benefit MDZip Studio and mdzip.org.
