@@ -1,5 +1,14 @@
-Status: awaiting-test
-Last: v1.3.94 — linked images for .md (#14) get the Markdown/HTML + alignment dialog; on published @mdzip/editor 1.4.6; needs a try in real VS Code
+Status: ready-to-commit
+Last: 1.4.0 release prepared: consolidated CHANGELOG (1.3.77–1.3.101), mdzip-vscode-1.4.0.vsix packaged on @mdzip/editor 1.5.0, all tests green — ready to commit, tag and publish
+
+**Release version is 1.4.0** (decided 2026-10-07): a feature release after 1.3.63. Deliberately not 1.5.0: the extension has its own version line and does not track `@mdzip/editor`.
+
+v1.3.96 space-in-name fix: `_loadRelativeDiskImages`
+in `mdzDocument.ts` read `images/pasted%202.png` literally from disk, so the
+image rendered right after insert (registered via `addAsset` under its decoded
+name) but was skipped on reopen. Regression test in `tests/mdzDocument.test.cjs`.
+
+v1.3.95 — Mermaid diagram no longer breaks after adding an image (editor 1.4.7 serializes renders); built against a local link to the unpublished editor; needs a try in real VS Code
 
 v1.3.94: the webview uses the editor's new `context.promptImageInsert` /
 `formatImageInsert` (@mdzip/editor 1.4.6) so linked images get the same dialog a

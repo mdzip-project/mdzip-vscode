@@ -241,7 +241,10 @@ export class MdzDocument implements vscode.CustomDocument {
     // own ![]()-only copy, which is exactly why a raw-<img>-only file (like the
     // star-wars-demo sample) rendered with every relative image broken.
     for (const rawTarget of MdzArchiveCore.extractImageReferences(markdown)) {
-      const target = rawTarget.split(/[?#]/)[0].trim();
+      let target = rawTarget.split(/[?#]/)[0].trim();
+      // Links are URL-encoded (`pasted%202.png`) but the file on disk isn't; the
+      // editor also decodes refs before matching them against asset paths.
+      try { target = decodeURIComponent(target); } catch { /* keep as written */ }
       if (!target) { continue; }
       // Skip absolute URLs, protocol-relative, and absolute paths
       if (/^[a-zA-Z][\w+.-]*:/.test(target) || target.startsWith('//') || target.startsWith('/') || /^[a-zA-Z]:[/\\]/.test(target)) { continue; }

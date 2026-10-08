@@ -1,99 +1,28 @@
 # Change Log
 
-## [1.3.94] - 2026-09-24
+## [1.4.0] - 2026-10-07
+
+> Consolidates local test builds 1.3.77–1.3.101 into the changes since the last published version (1.3.63) — not every intermediate build. Built on `@mdzip/editor` 1.5.0.
 
 ### Added
-- A linked image added to a `.md` now goes through the same insert dialog a `.mdz` gets: Markdown or HTML, alt text, size and alignment (#14). Cancelling the dialog writes nothing. Needs `@mdzip/editor` 1.4.6.
-
-## [1.3.93] - 2026-09-24
-
-### Changed
-- "Link to an existing image" now says the file can be in the document's folder or a subfolder.
-
-## [1.3.92] - 2026-09-24
+- **Images in a `.md` file without converting it** (#14). Pasting or inserting an image into a `.md` now asks where it should go: copy it beside the document, copy it into a subfolder (default `images`), or convert to `.mdz` and embed it as before. Insert Image can also **link to an existing image** in the document's folder or a subfolder, with no copy. Linked images go through the same dialog a `.mdz` gets (Markdown or HTML, alt text, size and alignment), and cancelling writes nothing.
+- **Document statistics in the status bar** for the active MDZip editor tab, `.mdz` and `.md` alike: a word count, with characters, lines and reading time in the tooltip. It shows the MDZip or Markdown mark, names the file inside a `.mdz` it's counting, and updates as you type or switch files. Documents over 3 million characters show "large document" instead. Closes #12.
+- **In-page `#heading` links work in the preview.** Headings get GitHub-style anchor ids, and clicking `[text](#some-heading)` scrolls to the heading, even while images or diagrams above it are still loading.
+- **Preview links to files and folders outside the document open or reveal them**, matching VS Code's built-in Markdown preview. A link to a file on disk opens it (`.md` targets open in this extension's preview), and a link to a folder reveals it in the Explorer. Closes #13.
+- **Front matter**: a leading `---` YAML block renders as front matter in the preview instead of a stray rule and heading.
 
 ### Changed
-- The Insert Image choices on a `.md` now say what they do when you pick a file first ("Copy an image next to the document", "Copy an image into a subfolder", "Convert to .mdz and embed an image"); the paste wording is unchanged.
-
-## [1.3.91] - 2026-09-24
-
-### Added
-- Insert Image on a `.md` can now **link to an existing image** in the document's folder tree — pick the file and a relative link is inserted, with no copy (#14). An image outside the document's folder is refused with a pointer to the copy options, since the preview can't show it.
-
-## [1.3.90] - 2026-09-24
+- **The extension is now called MDZip Editor** (it was "MDZip (.mdz) Editor"). The "Open With…" picker reads "MDZip - MDZip Editor" for `.mdz` and "Markdown - MDZip Editor" for `.md`. The extension id and file associations are unchanged, so existing installs and "Open With" choices carry over. The Marketplace description and README now say it edits `.md` as well as `.mdz`.
+- The editor context menu no longer shows a "Spelling Suggestions — Shift+Right-Click" hint. VS Code disables spell-check, so no suggestions could ever appear.
+- Smaller webview bundle (about 5.3MB → 4.3MB).
 
 ### Fixed
-- A linked image added to a `.md` (#14) now shows in the preview immediately; in 1.3.89 it appeared as a broken image until the document was reopened.
-
-## [1.3.89] - 2026-09-24
-
-### Added
-- Pasting or inserting an image into a `.md` file now asks where it should go: beside the document, in a subfolder (default `images`), or convert to `.mdz` as before. The first two keep the file as `.md` and insert a relative link (#14).
-
-## [1.3.88] - 2026-09-24
-
-### Changed
-- Reworded the description so "single document mode" qualifies `.mdz` (where it applies), not the `.md` support.
-
-## [1.3.87] - 2026-09-24
-
-### Changed
-- The Marketplace description and README intro now say the extension edits `.md` as well as `.mdz` (the `.md` editor is an Open With choice, not the default). They previously described `.mdz` only.
-
-## [1.3.86] - 2026-09-24
-
-### Changed
-- The extension is now titled **MDZip Editor** (it was "MDZip (.mdz) Editor", which undersold an editor that also opens `.md`). The two editors get their own names, so the "Reopen Editor With…" / "Open With…" picker reads "MDZip - MDZip Editor" for `.mdz` files and "Markdown - MDZip Editor" for `.md`, instead of the repeated "MDZip Editor - MDZip (.mdz) Editor". The extension id and file associations are unchanged, so existing installs, defaults and "Open With" choices carry over.
-
-## [1.3.85] - 2026-09-24
-
-### Changed
-- The status bar statistics tooltip now names which Markdown file inside an `.mdz` archive the numbers are for (`Document: docs/chapter1.md`), and follows you as you switch between files in the archive. It previously showed only the archive's name.
-
-## [1.3.84] - 2026-09-24
-
-### Fixed
-- The status bar icon sat about 2px low next to its text and crowded it; it's raised to line up with the digits and has more space before the text.
-
-## [1.3.83] - 2026-09-24
-
-### Changed
-- The status bar statistics item shows the MDZip mark (`.mdz`) or the Markdown mark (`.md`) instead of the text "MDZip". The marks ship as a small icon font (`media/icons/mdzip-icons.woff`, contributed via `contributes.icons`) built in the `mdzip-mark` repo, which also carries an open-folder variant.
-
-## [1.3.82] - 2026-09-24
-
-### Added
-- **Document statistics in the status bar** (`MDZip · 1,234 words`, with characters, lines and reading time in the tooltip) for the active MDZip editor tab, `.mdz` and `.md` alike. It counts the document currently shown and updates as you type. The item is hidden whenever the active tab isn't an MDZip editor (including diff views), each document only ever shows its own numbers, and it's cleared when the document closes. Documents over 3 million characters show "large document" instead of counting. Closes #12.
-
-## [1.3.81] - 2026-09-23
-
-### Changed
-- `@mdzip/editor` bumped to `^1.4.5`.
-- **The editor context menu no longer shows a "Spelling Suggestions — Shift+Right-Click" hint.** It can't be true here: VS Code runs with spell-check disabled (its main window is created with `spellcheck: false`) and shows its own Cut/Copy/Paste-only menu for Shift+Right-Click, so no suggestions can ever appear in a webview. Uses `@mdzip/editor`'s new `showSpellingSuggestionsHint: false` option. Real spell-check in this extension would need a bundled dictionary and in-editor squiggles — not attempted.
-
-## [1.3.80] - 2026-09-23
-
-### Fixed
-- **Each keystroke appended another copy of the end of the document to the preview** (an extra heading + diagram per character typed, seen on a document of short sections). A bug in `@mdzip/editor`'s incremental preview reconciliation, present in its published 1.4.4 and so in the 1.3.77 build too — see its CHANGELOG. Fixed in `@mdzip/editor` 1.4.5.
-
-## [1.3.79] - 2026-09-23
-
-### Added
-- **In-page `#heading` links now work in the preview.** Headings get GitHub-style anchor ids and clicking `[text](#some-heading)` scrolls to it — including under this extension's progressive rendering, where the target may not be mounted yet. Comes from `@mdzip/editor` 1.4.5 (mdzip-editor#47).
-
-## [1.3.78] - 2026-09-23
-
-### Added
-- **Preview links to files/folders outside the current `.mdz`/`.md` archive now open or reveal them**, matching VS Code's built-in Markdown preview: a link resolving to a file on disk opens it (`.md` targets are forced into this extension's own preview mode, mirroring how the built-in previewer keeps you in preview as you click through linked docs; anything else opens via its default editor/app), a link resolving to a folder reveals it in the Explorer, and a link resolving to neither is left inert exactly as before. Resolved against the `.mdz`/`.md` file's own on-disk directory, not any archive-internal path structure. Uses `@mdzip/editor` 1.4.5's new `onUnresolvedLinkClick` hook. Archive-to-archive (`.mdz`-to-`.mdz`) links remain out of scope. Closes #13.
-
-## [1.3.77] - 2026-09-23
-
-### Fixed
-- **Relative images in a `.md`/`.mdz` file 403'd when the file was opened outside a matching workspace folder** (e.g. via "Open File" rather than "Open Folder"). The custom editor's webview never set `localResourceRoots`, so it fell back to VS Code's default (the extension's own directory plus the current workspace folders) — which doesn't include an arbitrary file's own containing directory when that directory isn't itself an open workspace folder. Now explicitly includes the document's own directory alongside the existing defaults.
-- **Editor and preview both jumping scroll position when starting to edit**, most visible on documents with images or a mermaid diagram. Fixed in `@mdzip/editor` 1.4.4 — see its own CHANGELOG for the root-cause writeup. Picked up via the `@mdzip/editor` dependency bump below.
-
-### Changed
-- `@mdzip/editor` bumped to `^1.4.4`, also bringing in its webview bundle-size reduction (~5.3MB → ~4.3MB, via curated highlight.js language imports) and front-matter rendering support.
+- Opening a large `.mdz` (over 32MB) and moving between its files no longer fails with "Timed out reading … from the extension host".
+- Relative images no longer fail to load (403) when a `.md` or `.mdz` is opened outside a matching workspace folder, e.g. with "Open File" instead of "Open Folder".
+- The editor and preview no longer jump scroll position when you start editing a document with images or a Mermaid diagram.
+- A Mermaid diagram no longer breaks ("Cannot read properties of null") after an image is added to the document.
+- A linked image whose file name has a space (e.g. `images/pasted%202.png`) no longer shows as broken after saving and reopening the document.
+- Clicking a preview link with malformed percent-encoding (e.g. `bad%E0%A4%A.md`) no longer throws an error.
 
 ## [1.3.63] - 2026-09-08
 

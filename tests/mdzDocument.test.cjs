@@ -243,6 +243,32 @@ test('serialized .md workspace resolves images referenced via raw HTML <img> tag
   doc.dispose();
 });
 
+test('serialized .md workspace resolves percent-encoded image references', async () => {
+  // Regression guard: inserting `pasted 2.png` writes `images/pasted%202.png`.
+  // It rendered right after insert, but on reopen _loadRelativeDiskImages
+  // looked for a file literally named `pasted%202.png` and skipped it.
+  const nodePath = require('node:path');
+  const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+  seedFs({
+    '/project/index.md': [
+      '![pasted 2](images/pasted%202.png)',
+      '<img src="images/team%20photo.png" width="100">',
+    ].join('\n'),
+    [nodePath.resolve('/project', 'images/pasted 2.png').replace(/\\/g, '/')]: imageBytes,
+    [nodePath.resolve('/project', 'images/team photo.png').replace(/\\/g, '/')]: imageBytes,
+  });
+
+  const doc = await MdzDocument.create(fakeUri('/project/index.md'));
+  const workspace = await doc.getSerializedWorkspace();
+
+  const diskAssetPaths = workspace.assets
+    .filter((asset) => typeof asset.dataUri === 'string' && asset.dataUri.startsWith('data:'))
+    .map((asset) => asset.path)
+    .sort();
+  assert.deepEqual(diskAssetPaths, ['images/pasted 2.png', 'images/team photo.png']);
+  doc.dispose();
+});
+
 test('readOnly reflects the file system permission bit at open', async () => {
   const writablePath = createRealFile('writable.md', '# Hello\n');
   const lockedPath = createRealFile('locked.md', '# Hello\n');
