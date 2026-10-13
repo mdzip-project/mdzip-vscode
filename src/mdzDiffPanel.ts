@@ -180,6 +180,8 @@ function buildDiffHtml(
     vscode.Uri.joinPath(extensionUri, 'media', 'diff.bundle.js')
   );
   const nonce = getNonce();
+  // Same remote-image rule as the editor (mdzip.remoteImages).
+  const remoteImages = vscode.workspace.getConfiguration('mdzip').get<boolean>('remoteImages', true) ? ' https:' : '';
 
   return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -187,7 +189,7 @@ function buildDiffHtml(
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'none';
-                 img-src blob: data:;
+                 img-src blob: data:${remoteImages};
                  style-src ${webview.cspSource} 'unsafe-inline';
                  script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">

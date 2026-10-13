@@ -1,5 +1,10 @@
 # Change Log
 
+## [Unreleased]
+
+### Fixed
+- **Remote images now show in the MDZip editor and diff view.** Images from `https://` URLs (for example `![logo](https://example.com/logo.png)`) were blocked by the webview's Content-Security-Policy, so they never appeared. They now load, as in VS Code's built-in Markdown preview; plain `http://` images stay blocked. A new setting, `mdzip.remoteImages` (on by default), turns them off for anyone who doesn't want documents contacting remote servers.
+
 ## [1.4.0] - 2026-10-07
 
 > Consolidates local test builds 1.3.77–1.3.101 into the changes since the last published version (1.3.63) — not every intermediate build. Built on `@mdzip/editor` 1.5.0.

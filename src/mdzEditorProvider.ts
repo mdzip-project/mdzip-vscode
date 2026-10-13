@@ -852,6 +852,9 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     // pre-bundled worker script lives under the webview's resource origin.
     const workerUri = webview.asWebviewUri(vscode.Uri.file(path.join(mediaDir, 'mdz-archive.worker.js')));
     const nonce = getNonce();
+    // Remote images (https: only, like VS Code's Markdown preview) unless the user turned
+    // them off. Read once per editor: a settings change applies to editors opened after it.
+    const remoteImages = vscode.workspace.getConfiguration('mdzip').get<boolean>('remoteImages', true) ? ' https:' : '';
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -859,7 +862,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'none';
-                 img-src data: blob: ${webview.cspSource};
+                 img-src data: blob: ${webview.cspSource}${remoteImages};
                  style-src ${webview.cspSource} 'unsafe-inline';
                  script-src 'nonce-${nonce}';
                  worker-src ${webview.cspSource};">

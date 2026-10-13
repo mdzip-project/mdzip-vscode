@@ -89,6 +89,18 @@ The extension writes `<name>.mdz` beside the source file and opens it in the MDZ
 
 If a Markdown image does not render in Preview, verify that the Markdown path exactly matches an image path inside the archive, including filename and extension. The renderer resolves archive-relative paths exactly.
 
+Images loaded from `https://` URLs are shown, as in VS Code's own Markdown preview; plain `http://` images are always blocked. To stop documents from contacting remote servers when they're opened, turn off the `mdzip.remoteImages` setting. The change applies to editors opened after it.
+
+## Settings
+
+Open **Settings** and search for `mdzip`, or add these to `settings.json`:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `mdzip.remoteImages` | `true` | Show images loaded from `https://` URLs in the editor and diff view. Turn off to stop documents from contacting remote servers when they're opened. Plain `http://` images are always blocked. Applies to editors opened after the change. |
+| `mdzip.templates.path` | `""` | Primary folder containing MDZip templates. Relative paths beginning with `./` or `../` resolve from the first workspace folder. |
+| `mdzip.templates.additionalPaths` | `[]` | Additional template folders, resolved the same way. |
+
 ## Commands
 
 - `MDZip: New .mdz file...`

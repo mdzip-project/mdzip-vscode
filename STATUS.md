@@ -1,5 +1,5 @@
-Status: ready-to-commit
-Last: 1.4.0 release prepared: consolidated CHANGELOG (1.3.77–1.3.101), mdzip-vscode-1.4.0.vsix packaged on @mdzip/editor 1.5.0, all tests green — ready to commit, tag and publish
+Status: awaiting-test
+Last: Branch feat/remote-images: https images load by default (mdzip.remoteImages, off switch); README Settings section; test build build/mdzip-vscode-1.4.1.vsix — not committed
 
 **Release version is 1.4.0** (decided 2026-10-07): a feature release after 1.3.63. Deliberately not 1.5.0: the extension has its own version line and does not track `@mdzip/editor`.
 
