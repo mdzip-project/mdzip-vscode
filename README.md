@@ -89,6 +89,19 @@ The extension writes `<name>.mdz` beside the source file and opens it in the MDZ
 
 If a Markdown image does not render in Preview, verify that the Markdown path exactly matches an image path inside the archive, including filename and extension. The renderer resolves archive-relative paths exactly.
 
+Images loaded from `https://` URLs are shown, as in VS Code's own Markdown preview; plain `http://` images are always blocked. To stop documents from contacting remote servers when they're opened, turn off the `mdzip.remoteImages` setting. The change applies to editors opened after it.
+
+## Settings
+
+Open **Settings** and search for `mdzip`, or add these to `settings.json`:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `mdzip.previewWidth` | `"default"` | Width of the rendered page: `"narrow"`, `"default"`, `"wide"` (650 / 900 / 1200px at 100% zoom, scaling with zoom) or `"full"` (fills the preview pane). The page width button in the editor toolbar changes it, and every open editor follows. |
+| `mdzip.remoteImages` | `true` | Show images loaded from `https://` URLs in the editor and diff view. Turn off to stop documents from contacting remote servers when they're opened. Plain `http://` images are always blocked. Applies to editors opened after the change. |
+| `mdzip.templates.path` | `""` | Primary folder containing MDZip templates. Relative paths beginning with `./` or `../` resolve from the first workspace folder. |
+| `mdzip.templates.additionalPaths` | `[]` | Additional template folders, resolved the same way. |
+
 ## Commands
 
 - `MDZip: New .mdz file...`
@@ -176,3 +189,9 @@ npm run package
 
 This runs the full bundle step and writes `mdzip-vscode-<version>.vsix` into `build/`
 (gitignored), printing the absolute path when done.
+
+## Credits
+
+The "VS Code theme" icon in the editor's color scheme menu is the `vscode` icon
+from [Codicons](https://github.com/microsoft/vscode-codicons), © Microsoft,
+licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

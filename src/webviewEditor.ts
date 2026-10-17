@@ -2,10 +2,13 @@ import {
   MdzipWorkspaceView,
   computeDocumentStats,
   type MdzipColorScheme,
+  type MdzipColorSchemePreference,
   type MdzipConversionAction,
   type MdzipConversionContext,
   type MdzipSourceFormat,
   type MdzipWorkspaceLayout,
+  type MdzipPreviewWidthChoice,
+  type MdzipSystemColorScheme,
   type MdzipWorkspaceSnapshot,
 } from '@mdzip/editor';
 import { mdzipMermaidExtension } from '@mdzip/editor/mermaid';
@@ -17,6 +20,23 @@ interface VsCodeApi {
 }
 
 declare const acquireVsCodeApi: () => VsCodeApi;
+
+// The "vscode" icon from Codicons (https://github.com/microsoft/vscode-codicons),
+// © Microsoft, licensed CC BY 4.0. Marks the color scheme menu's System choice,
+// which here follows the VS Code theme.
+const VSCODE_THEME_ICON = '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M15.434 1.72887L12.14 0.144875C12.002 0.078875 11.855 0.046875 11.709 0.046875C11.353 0.046875 11.18 0.211875 11.155 0.228875C11.073 0.270875 11.005 0.337875 11.004 0.338875L4.698 6.08888L1.951 4.00488C1.832 3.91388 1.69 3.86987 1.548 3.86987C1.387 3.86987 1.226 3.92788 1.1 4.04288L0.219 4.84387C0.074 4.97587 0.001 5.15688 0.001 5.33687C0.001 5.51687 0.073 5.69688 0.218 5.82888L2.6 8.00088L0.217 10.1719C0.072 10.3039 0 10.4839 0 10.6639C0 10.8439 0.073 11.0249 0.218 11.1569L1.099 11.9579C1.226 12.0729 1.386 12.1309 1.547 12.1309C1.688 12.1309 1.83 12.0859 1.95 11.9959L4.697 9.91187L11.003 15.6619C11.003 15.6619 11.072 15.7299 11.155 15.7719C11.179 15.7889 11.353 15.9529 11.709 15.9529C11.855 15.9529 12.003 15.9209 12.141 15.8549L15.435 14.2709C15.781 14.1049 16.001 13.7539 16.001 13.3699V2.62888C16.001 2.24487 15.781 1.89488 15.435 1.72787L15.434 1.72887ZM7.217 7.99988L12.002 4.36987V11.6299L7.217 7.99988Z"/></svg>';
+
+/** What the color scheme menu's System choice follows here: the VS Code theme. */
+function vscodeThemeSource(): MdzipSystemColorScheme {
+  return { colorScheme: detectColorScheme(), label: 'VS Code theme', icon: VSCODE_THEME_ICON };
+}
+
+const PREVIEW_WIDTHS: readonly MdzipPreviewWidthChoice[] = ['narrow', 'default', 'wide', 'full'];
+// Kept across editor recreation (layout or source-format changes rebuild it):
+// the user's color scheme choice, and the page width from the mdzip.previewWidth
+// setting, which the host sends with every open and when the setting changes.
+let colorSchemePreference: MdzipColorSchemePreference = 'system';
+let previewWidth: MdzipPreviewWidthChoice = 'default';
 
 interface OpenWorkspaceMessage {
   type: 'openWorkspace';
@@ -352,6 +372,14 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
     void handlePackFiles(message);
     return;
   }
+  if ((message as { type?: string })?.type === 'setPreviewWidth') {
+    const width = (message as unknown as { width?: string }).width as MdzipPreviewWidthChoice;
+    if (PREVIEW_WIDTHS.includes(width) && width !== previewWidth) {
+      previewWidth = width;
+      editor?.setPreviewMaxWidth(width);
+    }
+    return;
+  }
   if (message?.type !== 'openWorkspace' && message?.type !== 'openWorkspaceDirect') {
     return;
   }
@@ -368,14 +396,14 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
   if (!editor) {
     currentLayout = layout;
     currentSourceFormat = message.sourceFormat;
-    editor = createEditor(currentLayout, currentSourceFormat, detectColorScheme());
+    editor = createEditor(currentLayout, currentSourceFormat);
     currentWorker = createArchiveWorker();
   } else if (layout !== currentLayout || message.sourceFormat !== currentSourceFormat) {
     editor.destroy();
     rootElement.replaceChildren();
     currentLayout = layout;
     currentSourceFormat = message.sourceFormat;
-    editor = createEditor(currentLayout, currentSourceFormat, detectColorScheme());
+    editor = createEditor(currentLayout, currentSourceFormat);
     // destroy() above terminates the worker paired with the old editor instance.
     currentWorker = createArchiveWorker();
   }
@@ -460,10 +488,11 @@ window.addEventListener('contextmenu', (event) => {
 }, { capture: true });
 
 // Live theme sync: VS Code updates body attributes when the user switches
-// color theme. setColorScheme re-renders in place — no editor recreation, so
-// CodeMirror state and unsaved edits survive.
+// color theme. The editor's System choice follows it (unless the user picked
+// Light or Dark in the toolbar menu), switching in place: no editor
+// recreation, so CodeMirror state and unsaved edits survive.
 new MutationObserver(() => {
-  editor?.setColorScheme(detectColorScheme());
+  editor?.setSystemColorScheme(vscodeThemeSource());
 }).observe(document.body, { attributes: true, attributeFilter: ['data-vscode-theme-kind', 'class'] });
 
 
@@ -523,8 +552,7 @@ function detectColorScheme(): MdzipColorScheme {
 
 function createEditor(
   initialLayout: MdzipWorkspaceLayout,
-  sourceFormat: MdzipSourceFormat,
-  initialColorScheme: MdzipColorScheme
+  sourceFormat: MdzipSourceFormat
 ): MdzipWorkspaceView {
   const isMdz = sourceFormat === 'mdz';
   return new MdzipWorkspaceView(rootElement, {
@@ -540,7 +568,19 @@ function createEditor(
     },
     navigationButtonActive: false,
     initialLayout,
-    initialColorScheme,
+    // System (the default) follows the VS Code theme, shown as "VS Code theme"
+    // with the VS Code icon; a Light or Dark pick is kept across recreation.
+    initialColorScheme: colorSchemePreference,
+    systemColorScheme: vscodeThemeSource(),
+    onColorSchemePreferenceChanged: (preference) => {
+      colorSchemePreference = preference;
+    },
+    // The page width menu reads and writes the mdzip.previewWidth setting.
+    previewMaxWidth: previewWidth,
+    onPreviewWidthChanged: (width) => {
+      previewWidth = width;
+      vscode.postMessage({ type: 'previewWidthChanged', width });
+    },
     // Tighten the built-in toolbar and content spacing to sit closer to VS
     // Code's native UI density. (contentDensity only supports comfortable/compact.)
     toolbarDensity: 'dense',

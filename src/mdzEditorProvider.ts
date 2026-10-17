@@ -154,6 +154,12 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     return vscode.Disposable.from(
       ...registrations,
       provider._statsBar,
+      // Open editors follow a page width changed in Settings (or by another editor's menu).
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration('mdzip.previewWidth')) {
+          provider._broadcastPreviewWidth();
+        }
+      }),
       new vscode.Disposable(() => {
         if (MdzEditorProvider._instance === provider) {
           MdzEditorProvider._instance = undefined;
@@ -168,6 +174,21 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
   ]);
 
   private constructor(private readonly context: vscode.ExtensionContext) {}
+
+  /** The editor page width from the mdzip.previewWidth setting. */
+  private static _previewWidthMessage(): { type: 'setPreviewWidth'; width: string } {
+    return { type: 'setPreviewWidth', width: vscode.workspace.getConfiguration('mdzip').get<string>('previewWidth', 'default') };
+  }
+
+  /** Sends the current page width setting to every open editor. */
+  private _broadcastPreviewWidth(): void {
+    const message = MdzEditorProvider._previewWidthMessage();
+    for (const panels of this._panelsByDocument.values()) {
+      for (const panel of panels) {
+        void postToWebviewSafely(panel, message);
+      }
+    }
+  }
 
   // -------------------------------------------------------------------------
   // CustomEditorProvider interface
@@ -310,6 +331,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       const message = await initialContentPayload;
       if (message) {
         await postToWebviewSafely(webviewPanel, message);
+        await postToWebviewSafely(webviewPanel, MdzEditorProvider._previewWidthMessage());
       }
     };
     webviewPanel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
@@ -556,6 +578,17 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           }
           await this._openWorkspaceRelativeLink(document.uri, message.href);
           break;
+
+        case 'previewWidthChanged': {
+          // A pick in the editor's page width menu: save it as the setting,
+          // which every open editor then follows (onDidChangeConfiguration).
+          const width = message.width;
+          const config = vscode.workspace.getConfiguration('mdzip');
+          if (width && ['narrow', 'default', 'wide', 'full'].includes(width) && config.get('previewWidth') !== width) {
+            await config.update('previewWidth', width, vscode.ConfigurationTarget.Global);
+          }
+          break;
+        }
 
         case 'modeChanged':
           if (message.mode !== 'edit' && message.mode !== 'preview') {
@@ -852,6 +885,9 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     // pre-bundled worker script lives under the webview's resource origin.
     const workerUri = webview.asWebviewUri(vscode.Uri.file(path.join(mediaDir, 'mdz-archive.worker.js')));
     const nonce = getNonce();
+    // Remote images (https: only, like VS Code's Markdown preview) unless the user turned
+    // them off. Read once per editor: a settings change applies to editors opened after it.
+    const remoteImages = vscode.workspace.getConfiguration('mdzip').get<boolean>('remoteImages', true) ? ' https:' : '';
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -859,7 +895,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'none';
-                 img-src data: blob: ${webview.cspSource};
+                 img-src data: blob: ${webview.cspSource}${remoteImages};
                  style-src ${webview.cspSource} 'unsafe-inline';
                  script-src 'nonce-${nonce}';
                  worker-src ${webview.cspSource};">
@@ -1719,7 +1755,8 @@ interface WebviewMessage {
     | 'workspaceSaved'
     | 'workspaceFailed'
     | 'readDocumentText'
-    | 'manifestChanged';
+    | 'manifestChanged'
+    | 'previewWidthChanged';
   markdown?: string;
   requestId?: number;
   manifest?: unknown;
@@ -1742,6 +1779,7 @@ interface WebviewMessage {
   ratio?: number;
   mode?: EditorMode;
   layout?: LayoutMode;
+  width?: string;
 }
 
 interface LoadMessage {

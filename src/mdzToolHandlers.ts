@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import { createHash } from 'crypto';
-import { MdzArchiveCore, MDZ_IMAGE_MIME_TYPES } from '@mdzip/core-js';
+import { MdzArchiveCore, MDZ_IMAGE_MIME_TYPES, samePath } from '@mdzip/core-js';
 
 /**
  * Shared business logic behind every mdz_ and upsert_canonical_document tool. This module is
@@ -549,7 +549,7 @@ async function resolveReadContext(
       canonicalEntrypointPath,
       entrypointSource: 'requested',
       isCanonicalRead: canonicalEntrypointPath
-        ? requestedPath.toLowerCase() === canonicalEntrypointPath.toLowerCase()
+        ? samePath(requestedPath, canonicalEntrypointPath)
         : false,
       isAmbiguous: false,
       recommendedNextAction:

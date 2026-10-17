@@ -2,7 +2,7 @@
   "name": "mdzip-vscode",
   "displayName": "MDZip Editor",
   "description": "Edit MDZip (.mdz) files in single document mode — Markdown plus its images in one portable file — with live preview. Also opens plain Markdown (.md) files in the same editor via Open With.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "icon": "media/icons/mdzip-marketplace-icon.png",
   "publisher": "mdzip-project",
   "license": "Apache-2.0",
@@ -75,7 +75,10 @@
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "mdzReviewDocument",
         "icon": "$(book)",
-        "tags": ["mdzip", "mdz"],
+        "tags": [
+          "mdzip",
+          "mdz"
+        ],
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -92,7 +95,9 @@
               "description": "Optional cap for returned images. Defaults to 12, clamped to 1..50."
             }
           },
-          "required": ["archivePath"]
+          "required": [
+            "archivePath"
+          ]
         }
       },
       {
@@ -102,7 +107,10 @@
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "mdzListEntries",
         "icon": "$(list-tree)",
-        "tags": ["mdzip", "mdz"],
+        "tags": [
+          "mdzip",
+          "mdz"
+        ],
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -111,7 +119,9 @@
               "description": "Absolute or workspace-relative path to the .mdz file."
             }
           },
-          "required": ["archivePath"]
+          "required": [
+            "archivePath"
+          ]
         }
       },
       {
@@ -121,7 +131,10 @@
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "mdzSearchText",
         "icon": "$(search)",
-        "tags": ["mdzip", "mdz"],
+        "tags": [
+          "mdzip",
+          "mdz"
+        ],
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -146,7 +159,10 @@
               "description": "Maximum number of matching lines to return. Defaults to 100, clamped to 1..1000."
             }
           },
-          "required": ["archivePath", "query"]
+          "required": [
+            "archivePath",
+            "query"
+          ]
         }
       },
       {
@@ -156,7 +172,10 @@
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "mdzReadText",
         "icon": "$(file-text)",
-        "tags": ["mdzip", "mdz"],
+        "tags": [
+          "mdzip",
+          "mdz"
+        ],
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -169,7 +188,10 @@
               "description": "Archive-relative path (for example: manifest.json or index.md)."
             }
           },
-          "required": ["archivePath", "entryPath"]
+          "required": [
+            "archivePath",
+            "entryPath"
+          ]
         }
       },
       {
@@ -179,7 +201,10 @@
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "mdzReadImage",
         "icon": "$(file-media)",
-        "tags": ["mdzip", "mdz"],
+        "tags": [
+          "mdzip",
+          "mdz"
+        ],
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -192,7 +217,10 @@
               "description": "Archive-relative image path (for example: images/diagram.png)."
             }
           },
-          "required": ["archivePath", "entryPath"]
+          "required": [
+            "archivePath",
+            "entryPath"
+          ]
         }
       },
       {
@@ -202,7 +230,10 @@
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "mdzReadMarkdownEmbeddedImages",
         "icon": "$(preview)",
-        "tags": ["mdzip", "mdz"],
+        "tags": [
+          "mdzip",
+          "mdz"
+        ],
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -215,7 +246,9 @@
               "description": "Optional archive-relative markdown path. When omitted, resolves manifest-first canonical markdown."
             }
           },
-          "required": ["archivePath"]
+          "required": [
+            "archivePath"
+          ]
         }
       },
       {
@@ -225,7 +258,10 @@
         "canBeReferencedInPrompt": false,
         "toolReferenceName": "mdzUpsertCanonicalDocument",
         "icon": "$(save)",
-        "tags": ["mdzip", "mdz"],
+        "tags": [
+          "mdzip",
+          "mdz"
+        ],
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -242,7 +278,11 @@
               "description": "The canonicalContentHash returned by the most recent mdzip_review_document call for this archive."
             }
           },
-          "required": ["archivePath", "content", "expectedContentHash"]
+          "required": [
+            "archivePath",
+            "content",
+            "expectedContentHash"
+          ]
         }
       }
     ],
@@ -404,6 +444,34 @@
             "type": "string"
           },
           "description": "Additional folders containing MDZip templates. Relative paths beginning with ./ or ../ resolve from the first workspace folder."
+        },
+        "mdzip.previewWidth": {
+          "type": "string",
+          "enum": [
+            "narrow",
+            "default",
+            "wide",
+            "full"
+          ],
+          "enumItemLabels": [
+            "Narrow",
+            "Default",
+            "Wide",
+            "Full Width"
+          ],
+          "enumDescriptions": [
+            "650px at 100% zoom; scales with zoom.",
+            "900px at 100% zoom; scales with zoom.",
+            "1200px at 100% zoom; scales with zoom.",
+            "Fills the preview pane."
+          ],
+          "default": "default",
+          "markdownDescription": "Width of the rendered page in the MDZip editor's preview. Picking a width from the page width button in the editor toolbar changes this setting, and every open editor follows it."
+        },
+        "mdzip.remoteImages": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show images loaded from `https://` URLs in the MDZip editor and diff view, as VS Code's Markdown preview does. Turn off to stop documents from contacting remote servers when they're opened. Plain `http://` images are always blocked. Applies to editors opened after the change."
         }
       }
     },
@@ -741,15 +809,16 @@
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.28.0",
+    "fflate": "^0.8.3",
     "typescript": "^5.9.3",
     "vsce": "^2.15.0"
   },
   "dependencies": {
-    "@mdzip/core-js": "^1.5.0",
-    "@mdzip/editor": "^1.5.0",
+    "@mdzip/core-js": "^2.0.1",
+    "@mdzip/editor": "^2.2.0",
     "@modelcontextprotocol/sdk": "^1.17.4",
     "jsdom": "^29.1.1",
     "marked": "^15.0.12",
-    "mermaid": "^11.15.0"
+    "mermaid": "^12.2.0"
   }
 }

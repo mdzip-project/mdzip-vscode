@@ -1,5 +1,20 @@
 # Change Log
 
+## [1.5.0] - 2026-10-16
+
+### Added
+- The editor's color scheme menu (new in this release's editor) has **VS Code theme** as its System choice, with the VS Code icon: the preview follows the VS Code theme, as before, and Light or Dark can still be picked to override it.
+- **Page width** menu in the editor toolbar (Narrow, Default, Wide, Full Width), saved as the new `mdzip.previewWidth` setting: a pick applies to every open editor and to files opened later, and changing the setting in Settings updates open editors.
+- The preview's right-click menu has **Copy** and **Copy All** submenus by format (Plain Text, Formatted Text, HTML, and Markdown for the whole document) and **Select All**. Ctrl+A selects the rendered document; Ctrl+A, Ctrl+C copies all of it as formatted text with images embedded.
+
+### Fixed
+- **Remote images now show in the MDZip editor and diff view.** Images from `https://` URLs (for example `![logo](https://example.com/logo.png)`) were blocked by the webview's Content-Security-Policy, so they never appeared. They now load, as in VS Code's built-in Markdown preview; plain `http://` images stay blocked. A new setting, `mdzip.remoteImages` (on by default), turns them off for anyone who doesn't want documents contacting remote servers.
+
+### Changed
+- Built on `@mdzip/editor` 2.2.0 and Mermaid 12: ER diagrams and flowcharts use the ELK layout (right-angle lines), and switching light/dark keeps the preview in place. Also includes the editor's footnotes, task list checkboxes and copy fixes (see the editor's 2.1.0 and 2.2.0 changelogs).
+- Built on `@mdzip/core-js` 2.0.1 (MDZip spec 1.2.0). Saved `.mdz` files always contain a `manifest.json` with `spec.version`, `title`, `entryPoint` and `mode`, and keep unknown manifest fields and untouched files byte-for-byte. Paths inside an archive are case-sensitive: `![](Images/Logo.png)` no longer shows `images/logo.png`. Renaming a file to a different case of its own name now works.
+- MCP server: paths are matched case-sensitively, as in the spec.
+
 ## [1.4.0] - 2026-10-07
 
 > Consolidates local test builds 1.3.77–1.3.101 into the changes since the last published version (1.3.63) — not every intermediate build. Built on `@mdzip/editor` 1.5.0.

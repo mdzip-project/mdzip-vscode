@@ -142,14 +142,15 @@ async function buildCanonicalArchive(markdown) {
   return Buffer.from(await result.blob.arrayBuffer());
 }
 
+// Rewrites manifest.json without entryPoint at the ZIP level. @mdzip/core-js 2.0.1+ won't save
+// such a manifest: a conforming producer records the entry point (spec 1.2.0 section 14.1).
 async function stripManifestEntrypoint(archiveBytes) {
-  const { MdzArchiveCore } = await getMdzipCore();
-  const archive = await MdzArchiveCore.open(archiveBytes);
-  const manifest = JSON.parse(await archive.readText('manifest.json'));
+  const { unzipSync, zipSync, strFromU8, strToU8 } = require('fflate');
+  const entries = unzipSync(new Uint8Array(archiveBytes));
+  const manifest = JSON.parse(strFromU8(entries['manifest.json']));
   delete manifest.entryPoint;
-
-  const result = await MdzArchiveCore.addFile(archiveBytes, 'manifest.json', `${JSON.stringify(manifest, null, 2)}\n`);
-  return Buffer.from(await result.blob.arrayBuffer());
+  entries['manifest.json'] = strToU8(`${JSON.stringify(manifest, null, 2)}\n`);
+  return Buffer.from(zipSync(entries));
 }
 
 async function addMarkdownAndStripEntrypoint(archiveBytes, markdownPath, markdownText) {
