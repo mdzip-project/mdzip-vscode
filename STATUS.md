@@ -1,5 +1,5 @@
-Status: ready-to-commit
-Last: Release v1.5.0 committed and tagged locally (editor 2.2.0 + Mermaid 12, VS Code theme System, mdzip.previewWidth, copy menus, remote images, core-js 2.0.1); VSIX mdzip-vscode-1.5.0.vsix; push, GitHub release and Marketplace publish pending (Kyle)
+Status: idle
+Last: Released v1.5.0 (GitHub release with VSIX + VS Code Marketplace, 2026-10-17): editor 2.2.0 + Mermaid 12, VS Code theme System, mdzip.previewWidth, copy menus, remote images
 
 Test only: build/mdzip-vscode-overnight-test.vsix (2026-10-15) bundles the unpublished @mdzip/editor from mdzip-editor's integration/overnight branch (#51-#58), packed to mdzip-editor/local-packages/overnight/ and installed with --no-save. The branch itself still bundles the published @mdzip/editor 2.0.1. Updated 2026-10-15: the overnight VSIX also bundles Mermaid 12.2.0 (ELK default layout, Mermaid's own default look) with mdzip-editor's feat/mermaid-12. The branch stays on Mermaid 11: the published editor 2.0.1 only accepts mermaid ^11 (npm ERESOLVE), so the Mermaid 12 upgrade waits for an editor release with the ^11 || ^12 range.
 
