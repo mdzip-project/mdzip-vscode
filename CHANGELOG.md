@@ -1,5 +1,18 @@
 # Change Log
 
+## [1.6.0] - 2026-10-22
+
+### Added
+- **Add Files…** on folders in the MDZip editor's file tree, and **Shift+drag from VS Code's Explorer** onto the tree to add files (the extension reads them; Shift+drag from Windows Explorer already worked). Files over 100 MB and folders are skipped, with a warning.
+- **Open in VS Code Editor**: right-click a file in the MDZip editor's file tree to open it straight from the archive in whichever VS Code editor handles its type, including other extensions' editors: a `.drawio.svg` in Draw.io Integration, a `.pdf` in a PDF viewer, a `.json` in the text editor. Also the command **MDZip: Open File from Archive in VS Code Editor**. Saving writes that one file back into the archive, keeping every other entry unchanged, and an open MDZip editor reloads. Files are served by a new `mdzip-entry:` file system; tabs and breadcrumbs show the file's name and its place in the archive.
+- With unsaved changes in the MDZip editor, opening a file asks to save first, and a save from the other editor is refused (with a **Save MDZip Changes** button), so neither overwrites the other. Files in read-only archives, including git versions, open read-only.
+
+### Changed
+- Built on `@mdzip/editor` 2.3.0 and `@mdzip/core-js` 2.1.1:
+  - **Links in SVG diagrams can be clicked** in the preview: an SVG with links, such as a draw.io diagram saved as `.drawio.svg`, is shown inline (cleaned, in its own shadow root) instead of as a flat image.
+  - The preview no longer requests an archive's images from outside the archive before showing them (mdzip-editor#61).
+  - The diff view's line-number gutters follow the VS Code theme (mdzip-editor#60).
+
 ## [1.5.0] - 2026-10-16
 
 ### Added

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { registerArchiveEntryFileSystem } from './archiveEntryFs';
 import * as path from 'path';
 import * as os from 'os';
 import { promises as fs } from 'fs';
@@ -676,6 +677,9 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
     })
   );
 
+
+  // Files inside an archive, opened in any VS Code editor (draw.io, PDF, text, ...).
+  registerArchiveEntryFileSystem(context);
 
   // Register FileSystemProvider for virtual markdown URIs
   class MdzMarkdownFsProvider implements vscode.FileSystemProvider {

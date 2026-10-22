@@ -85,6 +85,28 @@ MDZip: Convert .md To .mdz
 
 The extension writes `<name>.mdz` beside the source file and opens it in the MDZip editor.
 
+### Adding files to an archive
+
+- **Right-click a folder** in the MDZip editor's file tree (or its empty space, for the top level) and choose **Add Files…**.
+- **Drag files onto the file tree** from Windows Explorer or from VS Code's own Explorer. **Hold Shift while you drag**: without it, VS Code opens the file itself instead of dropping it into the MDZip editor.
+- **Paste or drop an image** into the Markdown source to add it and insert a link.
+
+Then save the archive. Folders aren't added, and files over 100 MB dragged from VS Code's Explorer are skipped, with a warning.
+
+### Opening a file from the archive in another VS Code editor
+
+Right-click a file in the MDZip editor's file tree and choose **Open in VS Code Editor** (or run **MDZip: Open File from Archive in VS Code Editor**). The file opens straight from the archive, in whichever editor VS Code uses for its type, including editors from other extensions:
+
+- a draw.io diagram (`.drawio.svg`, `.drawio`) in the [Draw.io Integration](https://marketplace.visualstudio.com/items?itemName=hediet.vscode-drawio) extension;
+- a `.pdf` in a PDF viewer extension, such as [vscode-pdf](https://marketplace.visualstudio.com/items?itemName=tomoki1207.pdf);
+- a `.json`, `.csv` or `.svg` in the text editor, and images in the image preview.
+
+The tab is titled with the file's name, and the breadcrumb shows the archive and the folders inside it. Saving writes that one file back into the archive and leaves everything else in it unchanged; an MDZip editor open on the same archive reloads to show the change.
+
+- **Unsaved changes in the MDZip editor:** save them first. Opening a file asks to, and a save from the other editor is refused until you do, so neither editor overwrites the other's changes.
+- **Read-only archives** (a read-only file, or a version from git) open their files read-only.
+- **Extensions that only open files on disk** can't open files inside an archive. Draw.io Integration, vscode-pdf and DOCX Viewer work; others may not.
+
 ### Troubleshooting image rendering
 
 If a Markdown image does not render in Preview, verify that the Markdown path exactly matches an image path inside the archive, including filename and extension. The renderer resolves archive-relative paths exactly.
@@ -122,6 +144,7 @@ Open **Settings** and search for `mdzip`, or add these to `settings.json`:
 - `MDZip: Visit mdzip.org`
 - `MDZip: Enable Workspace Agent Instructions`
 - `MDZip: Extract to Folder`
+- `MDZip: Open File from Archive in VS Code Editor`
 
 ## Documentation
 

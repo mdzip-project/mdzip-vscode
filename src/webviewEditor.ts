@@ -290,6 +290,26 @@ const loadingEl = document.getElementById('mdzip-loading');
 const pendingTextRequests = new Map<number, (text: string) => void>();
 let nextTextRequestId = 1;
 
+// Files dragged from VS Code's Explorer reach the webview only as URIs
+// (text/uri-list); the extension host reads them (readDroppedUris).
+const pendingDropRequests = new Map<number, (files: Array<{ name: string; bytes: Uint8Array }>) => void>();
+let nextDropRequestId = 1;
+
+function requestDroppedFiles(uris: string[]): Promise<Array<{ name: string; bytes: Uint8Array }>> {
+  return new Promise((resolve, reject) => {
+    const requestId = nextDropRequestId++;
+    const timer = window.setTimeout(() => {
+      pendingDropRequests.delete(requestId);
+      reject(new Error('Timed out reading the dropped files from the extension host.'));
+    }, 60000);
+    pendingDropRequests.set(requestId, (files) => {
+      window.clearTimeout(timer);
+      resolve(files);
+    });
+    vscode.postMessage({ type: 'readDroppedUris', requestId, uris });
+  });
+}
+
 function requestDocumentText(path: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const requestId = nextTextRequestId++;
@@ -342,6 +362,15 @@ function readCurrentLayout(): MdzipWorkspaceLayout {
 
 window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | OpenWorkspaceDirectMessage | DocumentTextMessage | PackFilesMessage>) => {
   const message = event.data;
+  if ((message as { type?: string })?.type === 'droppedFiles') {
+    const { requestId, files } = message as unknown as { requestId: number; files: Array<{ name: string; base64: string }> };
+    const resolve = pendingDropRequests.get(requestId);
+    if (resolve) {
+      pendingDropRequests.delete(requestId);
+      resolve(files.map((file) => ({ name: file.name, bytes: base64ToBytes(file.base64) })));
+    }
+    return;
+  }
   if (message?.type === 'documentText') {
     const resolve = pendingTextRequests.get(message.requestId);
     if (resolve) {
@@ -567,6 +596,16 @@ function createEditor(
       search: false,
     },
     navigationButtonActive: false,
+    // Right-click a file in the tree: open it in a VS Code editor (draw.io for a
+    // .drawio.svg, the PDF viewer for a .pdf, ...), straight from the archive.
+    // Shift+drag from VS Code's Explorer onto the file tree: the drop carries
+    // only URIs, so the extension host reads the files.
+    resolveDroppedUris: isMdz ? requestDroppedFiles : undefined,
+    hostFileActions: isMdz ? [{
+      id: 'open-in-vscode',
+      label: 'Open in VS Code Editor',
+      run: (file) => vscode.postMessage({ type: 'openArchiveEntry', path: file.path }),
+    }] : undefined,
     initialLayout,
     // System (the default) follows the VS Code theme, shown as "VS Code theme"
     // with the VS Code icon; a Light or Dark pick is kept across recreation.

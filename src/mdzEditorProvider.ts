@@ -211,6 +211,15 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
   // ── Test API surface ──────────────────────────────────────────────────────
 
+  /**
+   * Whether an open MDZip editor for this archive has unsaved changes. The
+   * archive-entry file system refuses to write into such an archive: the
+   * editor's next save would overwrite the change.
+   */
+  public static isDocumentDirty(uri: vscode.Uri): boolean {
+    return MdzEditorProvider._instance?._documentsByUri.get(uri.toString())?.isDirty ?? false;
+  }
+
   /** Whether a document is currently open for this URI. Used by tests. */
   public static hasDocumentForUri(uri: vscode.Uri): boolean {
     return MdzEditorProvider._instance?._documentsByUri.has(uri.toString()) ?? false;
@@ -578,6 +587,76 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
           }
           await this._openWorkspaceRelativeLink(document.uri, message.href);
           break;
+
+        case 'readDroppedUris': {
+          // Files Shift+dragged from VS Code's Explorer onto the file tree arrive
+          // as URIs only; read them here and send the bytes back. Folders, files
+          // that can't be read and files over the size limit are skipped.
+          if (typeof message.requestId !== 'number' || !Array.isArray(message.uris)) {
+            return;
+          }
+          const MAX_DROPPED_FILE_BYTES = 100 * 1024 * 1024;
+          const files: Array<{ name: string; base64: string }> = [];
+          const skipped: string[] = [];
+          for (const raw of message.uris) {
+            if (typeof raw !== 'string') continue;
+            let uri: vscode.Uri;
+            try {
+              uri = vscode.Uri.parse(raw, true);
+            } catch {
+              continue;
+            }
+            const name = uri.path.split('/').pop() || '';
+            try {
+              const stat = await vscode.workspace.fs.stat(uri);
+              if (stat.type & vscode.FileType.Directory || !name) {
+                skipped.push(`${name || raw} (a folder)`);
+                continue;
+              }
+              if (stat.size > MAX_DROPPED_FILE_BYTES) {
+                skipped.push(`${name} (over 100 MB)`);
+                continue;
+              }
+              const bytes = await vscode.workspace.fs.readFile(uri);
+              files.push({ name, base64: Buffer.from(bytes).toString('base64') });
+            } catch (error) {
+              logError(`Failed to read dropped file ${raw}`, error);
+              skipped.push(name || raw);
+            }
+          }
+          if (skipped.length > 0) {
+            void vscode.window.showWarningMessage(`Not added to the archive: ${skipped.join(', ')}.`);
+          }
+          void postToWebviewSafely(webviewPanel, { type: 'droppedFiles', requestId: message.requestId, files });
+          break;
+        }
+
+        case 'openArchiveEntry': {
+          // "Open in VS Code Editor" from the file tree: the file opens through the
+          // mdzip-entry file system (archiveEntryFs.ts), in whatever editor VS Code
+          // has for its type. With unsaved changes the file may not be on disk yet,
+          // and a save from the other editor would be refused, so save first.
+          if (typeof message.path !== 'string') {
+            return;
+          }
+          if (document.isDirty) {
+            const name = document.uri.path.split('/').pop() ?? 'This archive';
+            const choice = await vscode.window.showWarningMessage(
+              `${name} has unsaved changes. Save them before opening ${message.path.split('/').pop()} in another editor?`,
+              { modal: true },
+              'Save and Open'
+            );
+            if (choice !== 'Save and Open') {
+              return;
+            }
+            await vscode.commands.executeCommand('workbench.action.files.save');
+            if (document.isDirty) {
+              return;
+            }
+          }
+          await vscode.commands.executeCommand('mdzip.openArchiveEntry', document.uri, message.path);
+          break;
+        }
 
         case 'previewWidthChanged': {
           // A pick in the editor's page width menu: save it as the setting,
@@ -1756,8 +1835,11 @@ interface WebviewMessage {
     | 'workspaceFailed'
     | 'readDocumentText'
     | 'manifestChanged'
-    | 'previewWidthChanged';
+    | 'previewWidthChanged'
+    | 'openArchiveEntry'
+    | 'readDroppedUris';
   markdown?: string;
+  uris?: unknown;
   requestId?: number;
   manifest?: unknown;
   archivePath?: string;

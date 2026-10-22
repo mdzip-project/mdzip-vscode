@@ -6728,8 +6728,21 @@ var MDZ_SPEC_VERSION = "1.2.0";
 var MDZ_SUPPORTED_MAJOR = 1;
 var MDZ_MODES = ["document", "project"];
 var MDZ_SUPPORT_FILE_NAMES = ["readme", "agents", "license", "changelog", "contributing"];
-function mdzError(code, message) {
-  return new Error(`${code}: ${message}`);
+var MdzError = class _MdzError extends Error {
+  code;
+  constructor(code, message, options) {
+    super(`${code}: ${message}`, options);
+    this.name = "MdzError";
+    this.code = code;
+  }
+  /** An `MdzError` from a `"CODE: message"` string. */
+  static fromMessage(text, options) {
+    const match = /^(ERR_[A-Z0-9_]+):\s*([\s\S]*)$/.exec(text);
+    return match ? new _MdzError(match[1], match[2], options) : new _MdzError("ERR_UNKNOWN", text, options);
+  }
+};
+function mdzError(code, message, options) {
+  return new MdzError(code, message, options);
 }
 var CONTROL_RE = /[\u0000-\u001f\u007f]/;
 var RESERVED_RE = /[\\:*?"<>|]/;
@@ -7071,7 +7084,7 @@ function insideArchive(archive, segments, host, withFragment, directory) {
 
 // ../../node_modules/@mdzip/core-js/dist/mdz-core.js
 var PRODUCER_SPEC_VERSION = MDZ_SPEC_VERSION;
-var CORE_LIBRARY_VERSION = "2.0.1";
+var CORE_LIBRARY_VERSION = "2.1.1";
 var CORE_LIBRARY_URL = "https://github.com/mdzip-project/mdzip-core-js";
 function isSymlinkEntry(entry) {
   const mode = entry?.unixPermissions;
@@ -7150,10 +7163,9 @@ var MdzArchiveCore = class _MdzArchiveCore {
     try {
       return await load4();
     } catch (error2) {
-      if (/^ERR_[A-Z_]+:/.test(error2 instanceof Error ? error2.message : ""))
+      if (error2 instanceof MdzError || /^ERR_[A-Z_]+:/.test(error2 instanceof Error ? error2.message : ""))
         throw error2;
-      const message = error2 instanceof Error ? error2.message : String(error2);
-      throw mdzError("ERR_ZIP_INVALID", `not a readable ZIP archive (${message})`);
+      throw mdzError("ERR_ZIP_INVALID", "The file is not a valid ZIP archive.", { cause: error2 });
     }
   }
   /** Rejects NFC-duplicate entries and files that are also directories (§5.4, §13.1): never picks one. */
@@ -7190,10 +7202,11 @@ var MdzArchiveCore = class _MdzArchiveCore {
    *
    * @param input - Raw archive bytes.
    * @param zipFactory - Optional custom zip loader.
+   * @param options - Validation controls (see {@link MdzValidateOptions}).
    */
-  static async validate(input, zipFactory) {
+  static async validate(input, zipFactory, options) {
     const archive = await _MdzArchiveCore.open(input, zipFactory);
-    return archive.validate();
+    return archive.validate(options);
   }
   /**
    * Adds or replaces an archive entry and returns a newly generated archive blob.
@@ -7255,24 +7268,24 @@ var MdzArchiveCore = class _MdzArchiveCore {
       const path = nfc(MdzPackagerCore.normalizePath(write.path));
       const pathError = _MdzArchiveCore.validateArchivePath(path);
       if (pathError) {
-        throw new Error(`ERR_PATH_INVALID: ${pathError}`);
+        throw MdzError.fromMessage(`ERR_PATH_INVALID: ${pathError}`);
       }
       normalizedWrites.set(path, { path, content: write.content });
     }
     const sourceBytes = await _MdzArchiveCore.readArchiveInputBytes(input);
     const archive = await _MdzArchiveCore.open(sourceBytes);
     const existingPaths = archive.listPaths();
-    const removable = [...existingPaths, ...archive.listSpecialFiles()];
+    const removable = [...archive.listPaths({ includeDirectories: true }), ...archive.listSpecialFiles()];
     const normalizedRemovals = /* @__PURE__ */ new Map();
     for (const removal of removals) {
       const path = MdzPackagerCore.normalizePath(removal);
       const pathError = _MdzArchiveCore.validateArchivePath(path);
       if (pathError) {
-        throw new Error(`ERR_PATH_INVALID: ${pathError}`);
+        throw MdzError.fromMessage(`ERR_PATH_INVALID: ${pathError}`);
       }
       const stored = removable.find((p) => samePath(p, path));
       if (stored === void 0) {
-        throw new Error(`ERR_NOT_FOUND: Entry "${path}" was not found in archive.`);
+        throw MdzError.fromMessage(`ERR_NOT_FOUND: Entry "${path}" was not found in archive.`);
       }
       normalizedRemovals.set(nfc(stored), stored);
     }
@@ -7325,7 +7338,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
     const nextManifest = manifestObject ?? (normalizedRemovals.has("manifest.json") ? null : existingManifest);
     const entryPointAfter = _MdzArchiveCore.resolveEntryPointStrict(nextPaths, nextManifest);
     if (entryPointBefore && !explicitManifest && !samePath(entryPointBefore, entryPointAfter)) {
-      throw new Error(`ERR_ENTRYPOINT_CHANGED: this change would move the entry point from "${entryPointBefore}" to "${entryPointAfter}"; set manifest entryPoint to change it.`);
+      throw MdzError.fromMessage(`ERR_ENTRYPOINT_CHANGED: this change would move the entry point from "${entryPointBefore}" to "${entryPointAfter}"; set manifest entryPoint to change it.`);
     }
     let patchedBytes;
     try {
@@ -7380,13 +7393,13 @@ var MdzArchiveCore = class _MdzArchiveCore {
         continue;
       }
       if (entry.localOffset + 30 > source.length || view.getUint32(entry.localOffset, true) !== 67324752) {
-        throw new Error(`ERR_ZIP_UNSUPPORTED: malformed local header for "${entry.name}"`);
+        throw MdzError.fromMessage(`ERR_ZIP_UNSUPPORTED: malformed local header for "${entry.name}"`);
       }
       const localNameLen = view.getUint16(entry.localOffset + 26, true);
       const localExtraLen = view.getUint16(entry.localOffset + 28, true);
       const dataStart = entry.localOffset + 30 + localNameLen + localExtraLen;
       if (dataStart + entry.compressedSize > source.length) {
-        throw new Error(`ERR_ZIP_UNSUPPORTED: entry data out of bounds for "${entry.name}"`);
+        throw MdzError.fromMessage(`ERR_ZIP_UNSUPPORTED: entry data out of bounds for "${entry.name}"`);
       }
       output.push({
         nameBytes: entry.nameBytes,
@@ -7512,27 +7525,27 @@ var MdzArchiveCore = class _MdzArchiveCore {
       }
     }
     if (eocd < 0) {
-      throw new Error("ERR_ZIP_UNSUPPORTED: end of central directory not found");
+      throw MdzError.fromMessage("ERR_ZIP_UNSUPPORTED: end of central directory not found");
     }
     if (view.getUint16(eocd + 4, true) !== 0 || view.getUint16(eocd + 6, true) !== 0) {
-      throw new Error("ERR_ZIP_UNSUPPORTED: multi-disk archives are not supported");
+      throw MdzError.fromMessage("ERR_ZIP_UNSUPPORTED: multi-disk archives are not supported");
     }
     const totalEntries = view.getUint16(eocd + 10, true);
     const centralSize = view.getUint32(eocd + 12, true);
     const centralOffset = view.getUint32(eocd + 16, true);
     if (totalEntries === 65535 || centralSize === 4294967295 || centralOffset === 4294967295) {
-      throw new Error("ERR_ZIP_UNSUPPORTED: ZIP64 archives are not supported");
+      throw MdzError.fromMessage("ERR_ZIP_UNSUPPORTED: ZIP64 archives are not supported");
     }
     const entries = [];
     const decoder = new TextDecoder("utf-8", { fatal: false });
     let pos = centralOffset;
     for (let i = 0; i < totalEntries; i++) {
       if (pos + 46 > source.length || view.getUint32(pos, true) !== 33639248) {
-        throw new Error("ERR_ZIP_UNSUPPORTED: malformed central directory");
+        throw MdzError.fromMessage("ERR_ZIP_UNSUPPORTED: malformed central directory");
       }
       const flags = view.getUint16(pos + 8, true);
       if ((flags & 1) !== 0) {
-        throw new Error("ERR_ZIP_UNSUPPORTED: encrypted entries are not supported");
+        throw MdzError.fromMessage("ERR_ZIP_UNSUPPORTED: encrypted entries are not supported");
       }
       const compressedSize = view.getUint32(pos + 20, true);
       const uncompressedSize = view.getUint32(pos + 24, true);
@@ -7541,11 +7554,11 @@ var MdzArchiveCore = class _MdzArchiveCore {
       const commentLen = view.getUint16(pos + 32, true);
       const localOffset = view.getUint32(pos + 42, true);
       if (compressedSize === 4294967295 || uncompressedSize === 4294967295 || localOffset === 4294967295) {
-        throw new Error("ERR_ZIP_UNSUPPORTED: ZIP64 archives are not supported");
+        throw MdzError.fromMessage("ERR_ZIP_UNSUPPORTED: ZIP64 archives are not supported");
       }
       const nameBytes = source.slice(pos + 46, pos + 46 + nameLen);
       if ((flags & 2048) === 0 && nameBytes.some((byte) => byte > 127)) {
-        throw new Error("ERR_ZIP_UNSUPPORTED: non-UTF-8 entry names are not supported");
+        throw MdzError.fromMessage("ERR_ZIP_UNSUPPORTED: non-UTF-8 entry names are not supported");
       }
       entries.push({
         name: _MdzArchiveCore.normalizePath(decoder.decode(nameBytes)),
@@ -7712,11 +7725,11 @@ var MdzArchiveCore = class _MdzArchiveCore {
     if (manifest && "entryPoint" in manifest && manifest.entryPoint !== void 0) {
       const problem = _MdzArchiveCore.entryPointError(manifest.entryPoint);
       if (problem)
-        throw new Error(`ERR_ENTRYPOINT_INVALID: ${problem}`);
+        throw MdzError.fromMessage(`ERR_ENTRYPOINT_INVALID: ${problem}`);
       const value = manifest.entryPoint;
       const found = find(value.startsWith("./") ? value.slice(2) : value);
       if (!found)
-        throw new Error(`ERR_ENTRYPOINT_MISSING: manifest.json references "${value}" which is not in the archive`);
+        throw MdzError.fromMessage(`ERR_ENTRYPOINT_MISSING: manifest.json references "${value}" which is not in the archive`);
       return found;
     }
     const index = find("index.md");
@@ -7729,8 +7742,8 @@ var MdzArchiveCore = class _MdzArchiveCore {
     if (content.length === 0 && rootMarkdown.length === 1)
       return rootMarkdown[0];
     if (rootMarkdown.length === 0)
-      throw new Error("ERR_ENTRYPOINT_UNRESOLVED: No Markdown file found at the archive root.");
-    throw new Error("ERR_ENTRYPOINT_UNRESOLVED: Multiple Markdown files at the archive root and no manifest.json entryPoint. Add an index.md or manifest.json entryPoint.");
+      throw MdzError.fromMessage("ERR_ENTRYPOINT_UNRESOLVED: No Markdown file found at the archive root.");
+    throw MdzError.fromMessage("ERR_ENTRYPOINT_UNRESOLVED: Multiple Markdown files at the archive root and no manifest.json entryPoint. Add an index.md or manifest.json entryPoint.");
   }
   /**
    * Infers a MIME type from an archive path.
@@ -8134,7 +8147,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
    * @param options - Workspace open controls.
    */
   async openWorkspace(options) {
-    const validation = await this.validate();
+    const validation = await this.validate({ checkImages: false });
     const manifest = await this.readManifest().catch(() => null);
     const mode = await this.resolveMode().catch(() => "document");
     const entryPoint = await this.resolveEntryPoint().catch(() => null);
@@ -8195,7 +8208,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
    */
   static validateManifest(manifest) {
     if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
-      throw new Error("ERR_MANIFEST_INVALID: manifest.json must be a JSON object.");
+      throw MdzError.fromMessage("ERR_MANIFEST_INVALID: manifest.json must be a JSON object.");
     }
     const ignored = checkManifest(manifest);
     _MdzArchiveCore.checkLegacyMdzField(manifest);
@@ -8260,7 +8273,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
    * skipped (§4, §13.1); ignored descriptive manifest fields and duplicate members (§6.4); a
    * missing `cover`; and missing version metadata.
    */
-  async validate() {
+  async validate(options) {
     const errors = [];
     const warnings = [];
     for (const path of _MdzArchiveCore.getArchivePaths(this.zip)) {
@@ -8313,11 +8326,48 @@ var MdzArchiveCore = class _MdzArchiveCore {
         errors.push(message);
       }
     }
+    if (options?.checkImages !== false)
+      warnings.push(...await this.missingImageWarnings());
     return {
       isValid: errors.length === 0,
       errors,
       warnings
     };
+  }
+  /**
+   * Images a Markdown document uses (`![](…)` and `<img src>`) that aren't in the archive. A
+   * warning, not an error: the spec doesn't make a broken image non-conforming, but it's the
+   * most common producer mistake. Web and `data:` images, and paths that leave the archive, are
+   * not checked here.
+   */
+  async missingImageWarnings() {
+    const warnings = [];
+    for (const document of this.listPaths().filter((p) => _MdzArchiveCore.isMarkdownFile(p))) {
+      let markdown;
+      try {
+        markdown = await this.readText(document);
+      } catch {
+        continue;
+      }
+      const seen = /* @__PURE__ */ new Set();
+      for (const ref of _MdzArchiveCore.extractImageReferences(markdown)) {
+        if (seen.has(ref))
+          continue;
+        seen.add(ref);
+        const target = this.resolveLink(document, ref, void 0, { use: "embed" });
+        if (target.kind !== "unresolved" || target.reason !== "not-found")
+          continue;
+        let message = `${document} uses image "${ref}", which is not in the archive.`;
+        try {
+          const nearMatch = this.findCaseOnlyMatch(_MdzArchiveCore.resolvePath(document, ref));
+          if (nearMatch)
+            message += ` (Did you mean "${nearMatch}"? Paths are case-sensitive.)`;
+        } catch {
+        }
+        warnings.push(message);
+      }
+    }
+    return warnings;
   }
   /**
    * Resolves the primary markdown entry point for rendering.
@@ -8359,10 +8409,10 @@ var MdzArchiveCore = class _MdzArchiveCore {
     const normalized = _MdzArchiveCore.normalizePath(path);
     const entry = this.findEntryWithDirectoryFallback(normalized);
     if (!entry) {
-      throw new Error(`ERR_NOT_FOUND: Entry "${normalized}" was not found in archive.`);
+      throw MdzError.fromMessage(`ERR_NOT_FOUND: Entry "${normalized}" was not found in archive.`);
     }
     if (entry.dir) {
-      throw new Error(`ERR_IS_DIRECTORY: Entry "${normalized}" is a directory.`);
+      throw MdzError.fromMessage(`ERR_IS_DIRECTORY: Entry "${normalized}" is a directory.`);
     }
     return entry;
   }
@@ -8463,7 +8513,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
       const parsed = JSON.parse(String(raw));
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         if (requireValid)
-          throw new Error("ERR_MANIFEST_INVALID: Existing manifest.json is invalid: expected a JSON object.");
+          throw MdzError.fromMessage("ERR_MANIFEST_INVALID: Existing manifest.json is invalid: expected a JSON object.");
         return null;
       }
       return parsed;
@@ -8471,7 +8521,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
       if (requireValid) {
         if (error2 instanceof Error && /expected a JSON object/.test(error2.message))
           throw error2;
-        throw new Error("ERR_MANIFEST_INVALID: Existing manifest.json is invalid JSON.");
+        throw MdzError.fromMessage("ERR_MANIFEST_INVALID: Existing manifest.json is invalid JSON.");
       }
       return null;
     }
@@ -8482,7 +8532,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
       const parsed = JSON.parse(raw);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         if (requireValid)
-          throw new Error("ERR_MANIFEST_INVALID: Replacement manifest.json is invalid: expected a JSON object.");
+          throw MdzError.fromMessage("ERR_MANIFEST_INVALID: Replacement manifest.json is invalid: expected a JSON object.");
         return {};
       }
       return parsed;
@@ -8490,7 +8540,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
       if (requireValid) {
         if (error2 instanceof Error && /expected a JSON object/.test(error2.message))
           throw error2;
-        throw new Error("ERR_MANIFEST_INVALID: Replacement manifest.json is invalid JSON.");
+        throw MdzError.fromMessage("ERR_MANIFEST_INVALID: Replacement manifest.json is invalid JSON.");
       }
       return {};
     }
@@ -8730,17 +8780,31 @@ var MdzPackagerCore = class _MdzPackagerCore {
    * @param rootName - Root/source label for fallback title.
    * @param options - Packaging options.
    */
+  /** The `producer.application` to write: the given fields that are non-empty strings, or null if none are. */
+  static producerApplication(application) {
+    if (!application)
+      return null;
+    const node = {};
+    for (const key of ["name", "version", "url"]) {
+      const value = application[key];
+      if (typeof value === "string" && value.trim())
+        node[key] = value.trim();
+    }
+    return Object.keys(node).length ? node : null;
+  }
   static buildManifestFromOptions(rootName, options) {
-    const hasManifestOption = options.mapFiles || !!options.title || !!options.mode || !!options.entryPoint || !!options.language || !!options.author || !!options.description || !!options.docVersion;
+    const hasManifestOption = options.mapFiles || !!options.title || !!options.mode || !!options.entryPoint || !!options.language || !!options.author || !!options.description || !!options.docVersion || !!_MdzPackagerCore.producerApplication(options.application);
     if (!hasManifestOption)
       return null;
     const now = (/* @__PURE__ */ new Date()).toISOString();
+    const application = _MdzPackagerCore.producerApplication(options.application);
     return _MdzPackagerCore.pruneManifest({
       spec: {
         name: "mdzip-spec",
         version: PRODUCER_SPEC_VERSION
       },
       producer: {
+        ...application ? { application } : {},
         core: {
           name: "mdzip-core-js",
           version: CORE_LIBRARY_VERSION,
@@ -8935,7 +8999,7 @@ var MdzPackagerCore = class _MdzPackagerCore {
     const path = _MdzPackagerCore.normalizePath(targetPath || (isFile ? source.name : "asset.bin"));
     const pathError = _MdzPackagerCore.validateArchivePath(path);
     if (pathError)
-      throw new Error(`ERR_PATH_INVALID: ${pathError}`);
+      throw MdzError.fromMessage(`ERR_PATH_INVALID: ${pathError}`);
     const bytes = await _MdzPackagerCore.readBinarySource(source);
     const mimeType = isBlob && source.type ? source.type : MdzArchiveCore.inferMimeType(path);
     return {
@@ -8981,13 +9045,16 @@ var MdzPackagerCore = class _MdzPackagerCore {
       mode,
       entryPoint
     });
+    const application = _MdzPackagerCore.producerApplication(options?.application);
+    if (application)
+      manifest.producer = { ...manifest.producer ?? {}, application };
     const files = [
       ...await Promise.all(workspace.documents.map(async (document) => {
         let text = document.text;
         if (!text && document.readText) {
           text = await document.readText();
         } else if (!text && document.isLazy) {
-          throw new Error(`ERR_LAZY_TEXT_UNAVAILABLE: document "${document.path}" was opened lazily but has no readText() reader (likely dropped by serialization); building would write an empty file`);
+          throw MdzError.fromMessage(`ERR_LAZY_TEXT_UNAVAILABLE: document "${document.path}" was opened lazily but has no readText() reader (likely dropped by serialization); building would write an empty file`);
         }
         return { path: document.path, text };
       })),
@@ -9025,7 +9092,7 @@ var MdzPackagerCore = class _MdzPackagerCore {
     try {
       manifest = JSON.parse(raw);
     } catch {
-      throw new Error("ERR_MANIFEST_INVALID: manifest.json is not valid JSON");
+      throw MdzError.fromMessage("ERR_MANIFEST_INVALID: manifest.json is not valid JSON");
     }
     MdzArchiveCore.validateManifest(manifest);
     return manifest;
@@ -9065,14 +9132,14 @@ var MdzPackagerCore = class _MdzPackagerCore {
       return new Uint8Array(source);
     if (typeof source.arrayBuffer === "function")
       return new Uint8Array(await source.arrayBuffer());
-    throw new Error("ERR_ASSET_BYTES_INVALID: Asset source is not readable as bytes.");
+    throw MdzError.fromMessage("ERR_ASSET_BYTES_INVALID: Asset source is not readable as bytes.");
   }
   static async readWorkspaceAssetBytes(asset) {
     if (asset.bytes)
       return _MdzPackagerCore.readBinarySource(asset.bytes);
     if (asset.readBytes)
       return asset.readBytes();
-    throw new Error(`ERR_ASSET_BYTES_MISSING: Asset "${asset.path}" has no bytes or readBytes() source.`);
+    throw MdzError.fromMessage(`ERR_ASSET_BYTES_MISSING: Asset "${asset.path}" has no bytes or readBytes() source.`);
   }
   /**
    * Builds an `.mdz` archive from input files and packaging options.
@@ -9085,7 +9152,7 @@ var MdzPackagerCore = class _MdzPackagerCore {
   static async buildArchive(files, rootName, options, zipWriterFactory) {
     const cleanInput = files.map((f) => ({ path: _MdzPackagerCore.normalizePath(f.path), file: f.file, data: f.data, text: f.text })).filter((f) => f.path && !f.path.endsWith("/"));
     if (!cleanInput.length) {
-      throw new Error("ERR_PACK_NO_INPUT: No files found to package.");
+      throw MdzError.fromMessage("ERR_PACK_NO_INPUT: No files found to package.");
     }
     let manifest = _MdzPackagerCore.buildManifestFromOptions(rootName, options);
     const skipMap = /* @__PURE__ */ new Map();
@@ -9155,7 +9222,7 @@ var MdzPackagerCore = class _MdzPackagerCore {
     }
     if (options.createIndex && !resolvedEntryPoint) {
       if (manifest?.entryPoint) {
-        throw new Error(`ERR_PACK_ENTRYPOINT_MISSING: Manifest entry-point "${manifest.entryPoint}" does not exist.`);
+        throw MdzError.fromMessage(`ERR_PACK_ENTRYPOINT_MISSING: Manifest entry-point "${manifest.entryPoint}" does not exist.`);
       }
       const sortedMarkdownPaths = markdownPaths.slice().sort((a, b) => a.localeCompare(b, void 0, { sensitivity: "base" }));
       const generated = _MdzPackagerCore.buildGeneratedIndex(sortedMarkdownPaths, options.title || rootName);
@@ -9167,7 +9234,7 @@ var MdzPackagerCore = class _MdzPackagerCore {
     }
     const declaredEntryPoint = manifest.entryPoint;
     if (declaredEntryPoint && !archivePaths.some((p) => samePath(p, declaredEntryPoint.replace(/^\.\//, "")))) {
-      throw new Error(`ERR_PACK_ENTRYPOINT_MISSING: Manifest entry-point "${declaredEntryPoint}" does not exist in archive.`);
+      throw MdzError.fromMessage(`ERR_PACK_ENTRYPOINT_MISSING: Manifest entry-point "${declaredEntryPoint}" does not exist in archive.`);
     }
     if (!declaredEntryPoint && resolvedEntryPoint) {
       manifest.entryPoint = resolvedEntryPoint;
