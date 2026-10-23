@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import { promises as fsPromises } from 'fs';
 import {
   buildNewArchiveWithTitle,
@@ -28,11 +29,25 @@ export class MdzDocument implements vscode.CustomDocument {
   /** Fired whenever the document changes (edit or external reload). */
   public readonly onDidChange = this._onDidChange.event;
 
+  private readonly _onDidChangeOnDisk = new vscode.EventEmitter<void>();
+  /**
+   * Fired when the file changes on disk (another program, the MCP server, an
+   * AI agent) while this document has unsaved changes, so it can't simply
+   * reload. Fired once per change; the provider asks the user what to do.
+   */
+  public readonly onDidChangeOnDisk = this._onDidChangeOnDisk.event;
+
   private readonly _watcher: vscode.FileSystemWatcher | undefined;
   private _reloadTimer: NodeJS.Timeout | undefined;
   private _disposed = false;
   private _userDirty = false;
-  private _suppressNextReload = false;
+  /**
+   * The file on disk as this document last knew it: set on open, reload,
+   * revert and this document's own save. A file that no longer matches was
+   * changed by someone else, and saving over it would lose their change.
+   */
+  private _disk: DiskState | undefined;
+  private _changedOnDisk = false;
   private _latestWebviewBytes: Uint8Array | undefined;
   private _convertedToMdz = false;
   public readonly isNewDocument: boolean;
@@ -95,6 +110,7 @@ export class MdzDocument implements vscode.CustomDocument {
   }
 
   private _subscribeToServiceChanges(): void {
+    this._unsubscribe?.();
     this._unsubscribe = this._service.subscribe((event) => {
       // Fire change event for all service changes (for VS Code tracking)
       // But only mark dirty for user edits from the webview (workspaceChanged)
@@ -107,15 +123,19 @@ export class MdzDocument implements vscode.CustomDocument {
   public static async create(uri: vscode.Uri): Promise<MdzDocument> {
     const bytes = await vscode.workspace.fs.readFile(uri);
     const readOnly = await MdzDocument._statReadOnly(uri);
+    const doc = await MdzDocument._createFromBytes(uri, bytes, readOnly);
+    await doc._setDiskBaseline(bytes);
+    return doc;
+  }
 
+  private static async _createFromBytes(uri: vscode.Uri, bytes: Uint8Array, readOnly: boolean): Promise<MdzDocument> {
     if (uri.path.toLowerCase().endsWith('.md')) {
       // For plain .md files, pass them directly without wrapping in an archive
       const service = await MdzipWorkspaceService.open(bytes, {
         sourceFormat: 'markdown',
         fileName: uri.path,
       });
-      const doc = new MdzDocument(uri, service, 'markdown', bytes.byteLength === 0, readOnly);
-      return doc;
+      return new MdzDocument(uri, service, 'markdown', bytes.byteLength === 0, readOnly);
     }
 
     if (bytes.byteLength === 0) {
@@ -128,8 +148,7 @@ export class MdzDocument implements vscode.CustomDocument {
         sourceFormat: 'mdz',
         fileName: uri.path,
       });
-      const doc = new MdzDocument(uri, service, 'mdz', true, readOnly);
-      return doc;
+      return new MdzDocument(uri, service, 'mdz', true, readOnly);
     }
 
     const sourceFormat = inferMdzipSourceFormat(bytes, uri.path);
@@ -138,8 +157,7 @@ export class MdzDocument implements vscode.CustomDocument {
       fileName: uri.path,
     });
     service.markPersisted();
-    const doc = new MdzDocument(uri, service, sourceFormat, false, readOnly);
-    return doc;
+    return new MdzDocument(uri, service, sourceFormat, false, readOnly);
   }
 
   /** Return the parsed archive content. */
@@ -188,6 +206,7 @@ export class MdzDocument implements vscode.CustomDocument {
   /** Apply an edit from the webview (new markdown text). */
   public edit(newMarkdown: string): void {
     this._service.editText(newMarkdown);
+    this._userDirty = true;
   }
 
   /** Return a JSON-serializable workspace snapshot with all asset data URIs pre-resolved. */
@@ -300,9 +319,13 @@ export class MdzDocument implements vscode.CustomDocument {
     await this._service.setManifestTitle(newTitle);
   }
 
-  /** Persist unsaved changes to disk. */
-  public async save(): Promise<void> {
-    await this.saveAs(this.uri);
+  /**
+   * Persist unsaved changes to disk. Throws MdzDiskConflictError, writing
+   * nothing, if the file changed on disk since this document last read or
+   * wrote it, unless `overwrite` is set.
+   */
+  public async save(options: SaveOptions = {}): Promise<void> {
+    await this.saveAs(this.uri, options);
   }
 
   /** The most recent bytes sent from the webview (updated on every workspaceChanged). */
@@ -344,19 +367,37 @@ export class MdzDocument implements vscode.CustomDocument {
    */
   public async resetAfterMdzConversion(): Promise<void> {
     this._convertedToMdz = false;
-    // Suppress the file-watcher reload triggered by the host writing the .md back to disk.
-    this._suppressNextReload = true;
+    // revert() re-reads the .md the host just wrote and takes it as the new
+    // baseline, so the watcher event for that write is recognised as ours.
     await this.revert();
   }
 
-  /** Persist the document to a different URI (Save As). */
-  public async saveAs(target: vscode.Uri): Promise<void> {
+  /** Persist the document to a URI: its own (save) or another (Save As, backup). */
+  public async saveAs(target: vscode.Uri, options: SaveOptions = {}): Promise<void> {
     const bytes = this._latestWebviewBytes ?? await this._service.saveToBytes();
-    await vscode.workspace.fs.writeFile(target, bytes);
-    if (target.toString() === this.uri.toString()) {
+    const toSelf = target.toString() === this.uri.toString();
+    if (toSelf && !options.overwrite && await this._readIfChangedOnDisk()) {
+      // Someone else wrote the file since this document read it; writing our
+      // copy now would silently throw their change away.
+      throw new MdzDiskConflictError(this.uri);
+    }
+    const previousDisk = this._disk;
+    if (toSelf) {
+      // Recorded before the write, so a watcher event that races it is still
+      // recognised as this document's own write.
+      this._disk = { size: bytes.byteLength, mtime: Number.NaN, hash: hashBytes(bytes) };
+    }
+    try {
+      await vscode.workspace.fs.writeFile(target, bytes);
+    } catch (error) {
+      if (toSelf) this._disk = previousDisk;
+      throw error;
+    }
+    if (toSelf) {
+      await this._setDiskBaseline(bytes);
       this._service.markPersisted();
       this._userDirty = false;
-      this._suppressNextReload = true;
+      this._changedOnDisk = false;
       // The write above only succeeds if the file is currently writable —
       // cheaper and more current than a separate stat() call.
       this._readOnly = false;
@@ -366,39 +407,129 @@ export class MdzDocument implements vscode.CustomDocument {
   /** Revert the document to its last saved state. */
   public async revert(): Promise<void> {
     const bytes = await vscode.workspace.fs.readFile(this.uri);
-    const sourceFormat = inferMdzipSourceFormat(bytes, this.uri.path);
-    this._service = await MdzipWorkspaceService.open(bytes, {
-      sourceFormat,
-      fileName: this.uri.path,
-    });
-    this._latestWebviewBytes = undefined;
-    this._userDirty = false;
     this._convertedToMdz = false;
-    this._readOnly = await MdzDocument._statReadOnly(this.uri);
-    this._subscribeToServiceChanges();
-    this._onDidChange.fire({ reason: 'reload' });
+    await this._loadFromBytes(bytes);
+  }
+
+  /**
+   * Check the file on disk after the watcher reports a change. If someone
+   * else changed it: reload when this document has no unsaved changes;
+   * otherwise keep them and fire onDidChangeOnDisk. A change that is this
+   * document's own save is ignored.
+   */
+  public async checkDisk(): Promise<'unchanged' | 'reloaded' | 'conflict'> {
+    if (this._disposed) {
+      return 'unchanged';
+    }
+    const bytes = await this._readIfChangedOnDisk();
+    if (!bytes || this._disposed) {
+      return 'unchanged';
+    }
+    if (this.hasUnsavedChanges) {
+      if (!this._changedOnDisk) {
+        this._changedOnDisk = true;
+        this._onDidChangeOnDisk.fire();
+      }
+      return 'conflict';
+    }
+    await this._loadFromBytes(bytes);
+    return 'reloaded';
   }
 
   /** Reload from disk after an external file change when no local edits would be lost. */
   public async reloadFromDiskIfClean(): Promise<boolean> {
-    if (this._disposed || this._userDirty) {
-      return false;
-    }
-    if (this._suppressNextReload) {
-      this._suppressNextReload = false;
-      return false;
-    }
+    return (await this.checkDisk()) === 'reloaded';
+  }
 
-    const bytes = await vscode.workspace.fs.readFile(this.uri);
+  /**
+   * The user chose to keep their unsaved changes over a change on disk: take
+   * the file as it is now as the baseline, so the next save replaces it
+   * without asking again.
+   */
+  public async keepChangesOverDisk(): Promise<void> {
+    try {
+      await this._setDiskBaseline(await vscode.workspace.fs.readFile(this.uri));
+    } catch {
+      // The file is gone; the next save simply recreates it.
+    }
+    this._changedOnDisk = false;
+  }
+
+  /** Whether the file changed on disk while this document had unsaved changes. */
+  public get changedOnDisk(): boolean {
+    return this._changedOnDisk;
+  }
+
+  /** Unsaved changes that a reload from disk would throw away. */
+  public get hasUnsavedChanges(): boolean {
+    return this._userDirty || this._convertedToMdz;
+  }
+
+  /**
+   * Replace the document's content with bytes read from disk, dropping every
+   * copy of the previous state, including the last bytes from the webview
+   * (a later save or rename would otherwise rebuild from them).
+   */
+  private async _loadFromBytes(bytes: Uint8Array): Promise<void> {
     const sourceFormat = inferMdzipSourceFormat(bytes, this.uri.path);
     this._service = await MdzipWorkspaceService.open(bytes, {
       sourceFormat,
       fileName: this.uri.path,
     });
+    if (sourceFormat === 'mdz') {
+      this._service.markPersisted();
+    }
+    this._latestWebviewBytes = undefined;
+    this._userDirty = false;
+    this._changedOnDisk = false;
     this._readOnly = await MdzDocument._statReadOnly(this.uri);
+    await this._setDiskBaseline(bytes);
     this._subscribeToServiceChanges();
     this._onDidChange.fire({ reason: 'reload' });
-    return true;
+  }
+
+  private async _statDisk(): Promise<{ size: number; mtime: number } | undefined> {
+    try {
+      const stat = await vscode.workspace.fs.stat(this.uri);
+      return { size: stat.size, mtime: stat.mtime };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async _setDiskBaseline(bytes: Uint8Array): Promise<void> {
+    const stat = await this._statDisk();
+    this._disk = { size: stat?.size ?? bytes.byteLength, mtime: stat?.mtime ?? Number.NaN, hash: hashBytes(bytes) };
+  }
+
+  /**
+   * The file's bytes if they differ from the baseline, else undefined. Size
+   * and modification time decide quickly; the content hash confirms, so a
+   * file that was only touched (or this document's own save) isn't a change.
+   */
+  private async _readIfChangedOnDisk(): Promise<Uint8Array | undefined> {
+    if (!this._disk) {
+      return undefined;
+    }
+    const stat = await this._statDisk();
+    if (!stat) {
+      return undefined; // Deleted: nothing to protect; a save recreates it.
+    }
+    if (stat.size === this._disk.size && stat.mtime === this._disk.mtime) {
+      return undefined;
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = await vscode.workspace.fs.readFile(this.uri);
+    } catch {
+      return undefined;
+    }
+    const hash = hashBytes(bytes);
+    if (hash === this._disk.hash) {
+      this._disk = { size: stat.size, mtime: stat.mtime, hash };
+      return undefined;
+    }
+    return bytes;
   }
 
   /** Backup the document to the given destination. */
@@ -433,6 +564,7 @@ export class MdzDocument implements vscode.CustomDocument {
     this._unsubscribe?.();
     this._watcher?.dispose();
     this._onDidChange.dispose();
+    this._onDidChangeOnDisk.dispose();
   }
 
   private _createExternalChangeWatcher(uri: vscode.Uri): vscode.FileSystemWatcher | undefined {
@@ -449,8 +581,10 @@ export class MdzDocument implements vscode.CustomDocument {
     return watcher;
   }
 
+  // Every change is checked, with or without unsaved edits: checkDisk()
+  // decides between ignoring (our own save), reloading and warning.
   private _scheduleExternalReload(): void {
-    if (this._disposed || this._service.dirty) {
+    if (this._disposed) {
       return;
     }
 
@@ -460,11 +594,35 @@ export class MdzDocument implements vscode.CustomDocument {
 
     this._reloadTimer = setTimeout(() => {
       this._reloadTimer = undefined;
-      void this.reloadFromDiskIfClean();
+      this.checkDisk().catch((error) => logError(`Checking ${this.uri.fsPath} for external changes failed`, error));
     }, 100);
   }
 }
 
 export interface MdzDocumentChangeEvent {
   reason: 'edit' | 'reload';
+}
+
+export interface SaveOptions {
+  /** Write even if the file changed on disk since it was read (the user chose to). */
+  overwrite?: boolean;
+}
+
+interface DiskState {
+  size: number;
+  /** NaN until known, so it never matches and the hash decides. */
+  mtime: number;
+  hash: string;
+}
+
+/** A save refused because the file changed on disk since the document read it. */
+export class MdzDiskConflictError extends Error {
+  constructor(public readonly uri: vscode.Uri) {
+    super(`${path.posix.basename(uri.path)} changed on disk since it was opened; saving would overwrite that change.`);
+    this.name = 'MdzDiskConflictError';
+  }
+}
+
+function hashBytes(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }

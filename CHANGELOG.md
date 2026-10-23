@@ -1,5 +1,28 @@
 # Change Log
 
+## [1.7.0] - 2026-10-22
+
+### Added
+- **Now on [Open VSX](https://open-vsx.org/extension/mdzip-project/mdzip-vscode)**, so VSCodium, Cursor and other editors built on VS Code can install it from their Extensions view.
+- **Works in more editors and older VS Code.** It now needs VS Code 1.95 or later (was 1.116), or an editor built on it. The MCP server and chat tools are set up only where the editor supports them, so a missing AI feature no longer stops the rest of the extension from starting. Menus say the editor's own name: **Open in Cursor Editor**, **Cursor theme** and so on.
+- **AI agents can add, replace and remove any file in an `.mdz`** (#16), not just the main document: other Markdown documents, images, diagrams, stylesheets, data files. Two new tools, in the MCP server and in VS Code chat:
+  - `mdz_write_entry` adds or replaces a file, from text, a file on disk (such as an image the agent just made) or base64. Replacing a file needs the hash from the agent's last read, so a change made since, in the editor or by someone else, is refused instead of overwritten.
+  - `mdz_remove_entry` removes a file, with the same check. The main document and `manifest.json` can't be removed.
+  - Every other file in the archive is kept exactly as it was, and adding a Markdown file never changes which file is the main document.
+  - Each write reports what changed and checks the archive afterwards, including images nothing uses and links or images that point at missing files.
+  - `mdz_read_text`, `mdz_read_image` and `mdz_list_entries` (with `includeHashes`) now report each file's hash.
+- New documents' `AGENTS.md` guide and the workspace agent instructions mention the new tools.
+- **A `.drawio` image in the preview now shows a card instead of a broken image** (MDZip editor 2.4.0). The card says why the diagram can't be drawn there, suggests saving it as `.drawio.svg` so it shows everywhere, and has an **Open in VS Code Editor** button to edit it in Draw.io Integration. You can also right-click the file in the contents pane.
+
+### Changed
+- The Command Palette's **MDZip: Open File from Archive in VS Code Editor** is now **MDZip: Open File from Archive**, which reads right in any editor.
+
+### Fixed
+- **An open MDZip editor no longer overwrites changes made to the file by something else**, such as the bundled MCP server, an AI agent or another program (#18). Before, an editor with no unsaved changes could keep its copy from before the change and write it back on the next save or rename, losing the change without a warning.
+  - With no unsaved changes, the editor reloads the file when it changes on disk.
+  - With unsaved changes, it says the file changed and offers **Reload from Disk** (discarding your changes) or **Keep My Changes**.
+  - Every save to the same file checks it first. If it changed since the editor read it, you choose **Overwrite** or **Reload from Disk** instead of the save silently replacing it.
+
 ## [1.6.0] - 2026-10-22
 
 ### Added

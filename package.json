@@ -2,7 +2,7 @@
   "name": "mdzip-vscode",
   "displayName": "MDZip Editor",
   "description": "Edit MDZip (.mdz) files in single document mode — Markdown plus its images in one portable file — with live preview. Also opens plain Markdown (.md) files in the same editor via Open With.",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "icon": "media/icons/mdzip-marketplace-icon.png",
   "publisher": "mdzip-project",
   "license": "Apache-2.0",
@@ -15,7 +15,7 @@
   },
   "homepage": "https://github.com/mdzip-project/mdzip-vscode#readme",
   "engines": {
-    "vscode": "^1.116.0"
+    "vscode": "^1.95.0"
   },
   "categories": [
     "Programming Languages",
@@ -103,7 +103,7 @@
       {
         "name": "mdzip_list_entries",
         "displayName": "List MDZip Entries",
-        "modelDescription": "List all non-directory entries inside an .mdz archive. Advanced inspection tool; prefer mdzip_review_document for default review workflows.",
+        "modelDescription": "List all non-directory entries inside an .mdz archive. Advanced inspection tool; prefer mdzip_review_document for default review workflows. Set includeHashes to get each entry's entryHash, needed to replace or remove it with mdzip_write_entry or mdzip_remove_entry.",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "mdzListEntries",
         "icon": "$(list-tree)",
@@ -117,6 +117,10 @@
             "archivePath": {
               "type": "string",
               "description": "Absolute or workspace-relative path to the .mdz file."
+            },
+            "includeHashes": {
+              "type": "boolean",
+              "description": "Also return each entry's size and entryHash. Reads every entry, so it's slower on large archives. Defaults to false."
             }
           },
           "required": [
@@ -284,6 +288,85 @@
             "expectedContentHash"
           ]
         }
+      },
+      {
+        "name": "mdzip_write_entry",
+        "displayName": "Add or Replace a File in an MDZip Archive",
+        "modelDescription": "Add or replace any file inside an .mdz archive: another Markdown document, an image, a diagram (.svg, .drawio), a stylesheet, a data file, an AGENTS.md. Give the content as exactly one of content (UTF-8 text), sourcePath (a file on disk, for images or diagrams you just generated) or contentBase64 (other binary). Every other file in the archive is kept byte-for-byte. Replacing an existing file requires expectedEntryHash (from mdzip_read_text, mdzip_read_image or mdzip_list_entries with includeHashes) and fails with CONTENT_CONFLICT if the file changed since; omit it to add a new file, which fails with ENTRY_EXISTS if the path is taken. manifest.json can't be written here. Returns the changed paths, the new entry hash and post-write validation, including images that nothing references and references that don't resolve.",
+        "canBeReferencedInPrompt": false,
+        "toolReferenceName": "mdzWriteEntry",
+        "icon": "$(new-file)",
+        "tags": [
+          "mdzip",
+          "mdz"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "archivePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the .mdz file."
+            },
+            "entryPath": {
+              "type": "string",
+              "description": "Archive-relative path of the file to add or replace, for example images/chart.png or chapters/02-setup.md. Case-sensitive."
+            },
+            "content": {
+              "type": "string",
+              "description": "The file as UTF-8 text (Markdown, SVG, .drawio, CSS, JSON, CSV, ...). Markdown line endings are normalized to LF."
+            },
+            "sourcePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path of a file on disk to copy into the archive, for example an image you generated."
+            },
+            "contentBase64": {
+              "type": "string",
+              "description": "The file as base64, for binary content passed inline."
+            },
+            "expectedEntryHash": {
+              "type": "string",
+              "description": "Required to replace an existing file: its entryHash from your last read. Omit when adding a new file."
+            }
+          },
+          "required": [
+            "archivePath",
+            "entryPath"
+          ]
+        }
+      },
+      {
+        "name": "mdzip_remove_entry",
+        "displayName": "Remove a File from an MDZip Archive",
+        "modelDescription": "Remove a file from an .mdz archive, keeping every other file byte-for-byte. Requires expectedEntryHash (from mdzip_read_text, mdzip_read_image or mdzip_list_entries with includeHashes) and fails with CONTENT_CONFLICT if the file changed since. manifest.json and the archive's entry point can't be removed. Returns the changed paths and post-write validation; check unresolvedReferences for links or images that pointed at the removed file.",
+        "canBeReferencedInPrompt": false,
+        "toolReferenceName": "mdzRemoveEntry",
+        "icon": "$(trash)",
+        "tags": [
+          "mdzip",
+          "mdz"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "archivePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the .mdz file."
+            },
+            "entryPath": {
+              "type": "string",
+              "description": "Archive-relative path of the file to remove. Case-sensitive."
+            },
+            "expectedEntryHash": {
+              "type": "string",
+              "description": "The file's entryHash from your last read."
+            }
+          },
+          "required": [
+            "archivePath",
+            "entryPath",
+            "expectedEntryHash"
+          ]
+        }
       }
     ],
     "languages": [
@@ -326,7 +409,7 @@
     "commands": [
       {
         "command": "mdzip.openArchiveEntry",
-        "title": "MDZip: Open File from Archive in VS Code Editor"
+        "title": "MDZip: Open File from Archive"
       },
       {
         "command": "mdzip.newFile",
@@ -809,7 +892,7 @@
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.39",
-    "@types/vscode": "^1.116.0",
+    "@types/vscode": "~1.95.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.28.0",
@@ -819,7 +902,7 @@
   },
   "dependencies": {
     "@mdzip/core-js": "^2.1.1",
-    "@mdzip/editor": "^2.3.0",
+    "@mdzip/editor": "^2.4.0",
     "@modelcontextprotocol/sdk": "^1.17.4",
     "jsdom": "^29.1.1",
     "marked": "^15.0.12",

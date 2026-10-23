@@ -20,7 +20,9 @@ Visual Studio Code extension to edit MDZip (`.mdz`) files — Markdown plus its 
 
 ## Requirements
 
-- VS Code 1.116 or later.
+- VS Code 1.95 or later.
+- Editors built on VS Code (VSCodium, Cursor, Windsurf and similar) can install it from [Open VSX](https://open-vsx.org/extension/mdzip-project/mdzip-vscode). They need to be based on VS Code 1.95 or later too.
+- The built-in MCP server is set up automatically in VS Code 1.101 or later, and its tools appear in VS Code's chat where that supports language model tools. Elsewhere, set it up with the MDZip MCP commands, or point your editor's MCP settings at it (**MDZip: Copy MCP Server Config Snippet**).
 
 ## Usage
 
@@ -95,7 +97,7 @@ Then save the archive. Folders aren't added, and files over 100 MB dragged from 
 
 ### Opening a file from the archive in another VS Code editor
 
-Right-click a file in the MDZip editor's file tree and choose **Open in VS Code Editor** (or run **MDZip: Open File from Archive in VS Code Editor**). The file opens straight from the archive, in whichever editor VS Code uses for its type, including editors from other extensions:
+Right-click a file in the MDZip editor's file tree and choose **Open in VS Code Editor** (or run **MDZip: Open File from Archive**). In Cursor, VSCodium and other editors built on VS Code, the menu item uses that editor's name, such as **Open in Cursor Editor**. The file opens straight from the archive, in whichever editor VS Code uses for its type, including editors from other extensions:
 
 - a draw.io diagram (`.drawio.svg`, `.drawio`) in the [Draw.io Integration](https://marketplace.visualstudio.com/items?itemName=hediet.vscode-drawio) extension;
 - a `.pdf` in a PDF viewer extension, such as [vscode-pdf](https://marketplace.visualstudio.com/items?itemName=tomoki1207.pdf);
@@ -144,7 +146,7 @@ Open **Settings** and search for `mdzip`, or add these to `settings.json`:
 - `MDZip: Visit mdzip.org`
 - `MDZip: Enable Workspace Agent Instructions`
 - `MDZip: Extract to Folder`
-- `MDZip: Open File from Archive in VS Code Editor`
+- `MDZip: Open File from Archive`
 
 ## Documentation
 
@@ -164,7 +166,9 @@ When VS Code prompts you to trust or start the bundled MDZip MCP server, approve
 
 - `mdz_review_document` - preferred first call for `.mdz` review, analysis, and summarization requests; returns markdown and referenced images together as MCP content.
 - `upsert_canonical_document` - updates the manifest-first canonical Markdown document.
-- `mdz_list_entries` - lists archive entries.
+- `mdz_write_entry` - adds or replaces any other file in the archive: another Markdown document, an image, a diagram, a data file. The content can be text, a file on disk, or base64. Replacing a file requires the `entryHash` from the agent's last read, so a change made since (in the editor, say) is never silently overwritten. Every other file is kept as it was.
+- `mdz_remove_entry` - removes a file, with the same `entryHash` check. The main document and `manifest.json` can't be removed.
+- `mdz_list_entries` - lists archive entries; with `includeHashes`, also each entry's size and `entryHash`.
 - `mdz_search_text` - searches UTF-8 text entries inside an `.mdz` archive for grep/find-style requests.
 - `mdz_read_text` - reads a text entry such as `manifest.json` or `index.md`.
 - `mdz_read_image` - returns image content directly as an MCP image payload.

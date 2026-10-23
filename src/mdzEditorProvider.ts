@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { MdzDocument } from './mdzDocument';
+import { MdzDocument, MdzDiskConflictError } from './mdzDocument';
 import { MdzDiffPanel } from './mdzDiffPanel';
 import { logInfo, logError } from './mdzLog';
 import { MdzStatsStatusBar } from './mdzStatsStatusBar';
@@ -206,7 +206,80 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
   ): Promise<MdzDocument> {
     const doc = await MdzDocument.create(uri);
     this._documentsByUri.set(uri.toString(), doc);
+    doc.onDidChangeOnDisk(() => {
+      void this._promptChangedOnDisk(doc);
+    });
     return doc;
+  }
+
+  /**
+   * The file changed on disk (another program, the MCP server, an AI agent)
+   * while the editor has unsaved changes. Ask instead of letting a later save
+   * silently overwrite it.
+   */
+  private async _promptChangedOnDisk(document: MdzDocument): Promise<void> {
+    const name = path.posix.basename(document.uri.path);
+    const reload = 'Reload from Disk';
+    const keep = 'Keep My Changes';
+    const choice = await vscode.window.showWarningMessage(
+      `${name} changed on disk while it has unsaved changes in the MDZip editor. ` +
+      'Reload it (discarding your changes), or keep your changes and replace the file when you save?',
+      reload,
+      keep
+    );
+    if (!document.changedOnDisk) {
+      return; // Saved, reverted or reloaded meanwhile.
+    }
+    if (choice === reload) {
+      await this._revertInEditor(document);
+    } else if (choice === keep) {
+      await document.keepChangesOverDisk();
+    }
+  }
+
+  /** Revert through VS Code, so the editor's unsaved-changes state clears too. */
+  private async _revertInEditor(document: MdzDocument): Promise<void> {
+    const panel = [...(this._panelsByDocument.get(document.uri.toString()) ?? [])][0];
+    if (!panel) {
+      await document.revert();
+      return;
+    }
+    panel.reveal(panel.viewColumn, false);
+    await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
+  }
+
+  /**
+   * Save to the document's own file. If the file changed on disk since it was
+   * read, ask: overwrite it, or reload it (discarding the unsaved changes).
+   * Cancelling leaves the document unsaved.
+   */
+  private async _saveCheckingDisk(document: MdzDocument): Promise<void> {
+    try {
+      await document.save();
+      return;
+    } catch (error) {
+      if (!(error instanceof MdzDiskConflictError)) {
+        throw error;
+      }
+    }
+    const name = path.posix.basename(document.uri.path);
+    const overwrite = 'Overwrite';
+    const reload = 'Reload from Disk';
+    const choice = await vscode.window.showWarningMessage(
+      `${name} changed on disk since you opened it, probably in another program or by an AI agent. ` +
+      'Saving now would replace that change.',
+      { modal: true, detail: 'Reload from Disk discards your unsaved changes in the MDZip editor.' },
+      overwrite,
+      reload
+    );
+    if (choice === overwrite) {
+      await document.save({ overwrite: true });
+    } else if (choice === reload) {
+      // Returning normally tells VS Code the document is clean, which it now is.
+      await document.revert();
+    } else {
+      throw new vscode.CancellationError();
+    }
   }
 
   // ── Test API surface ──────────────────────────────────────────────────────
@@ -246,6 +319,23 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       undo: () => { /* no-op */ },
       redo: () => { /* no-op */ },
     });
+  }
+
+  /** Simulate the manifestChanged message handler (a rename). Used by integration tests. */
+  public static async simulateManifestChange(uri: vscode.Uri, manifest: unknown): Promise<void> {
+    const instance = MdzEditorProvider._instance;
+    const doc = instance?._documentsByUri.get(uri.toString());
+    if (!instance || !doc) {
+      return;
+    }
+    await doc.applyManifest(manifest);
+    doc.markDirty();
+    instance._onDidChangeCustomDocument.fire({ document: doc, undo: () => { /* no-op */ }, redo: () => { /* no-op */ } });
+  }
+
+  /** The open document's current Markdown. Used by integration tests. */
+  public static documentMarkdown(uri: vscode.Uri): string | undefined {
+    return MdzEditorProvider._instance?._documentsByUri.get(uri.toString())?.currentMarkdown;
   }
 
   public async resolveCustomEditor(
@@ -786,7 +876,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
         await this._handleMarkdownConvertedToMdz(document);
         return;
       }
-      await document.save();
+      await this._saveCheckingDisk(document);
     } catch (error) {
       showFriendlySaveError(error, document.uri);
       throw error; // Re-throw: vscode needs the rejection to keep the doc marked dirty.
@@ -799,6 +889,10 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     _cancellation: vscode.CancellationToken
   ): Promise<void> {
     try {
+      if (destination.toString() === document.uri.toString()) {
+        await this._saveCheckingDisk(document);
+        return;
+      }
       await document.saveAs(destination);
     } catch (error) {
       showFriendlySaveError(error, destination);
@@ -1002,7 +1096,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 <body>
   <div id="mdzip-loading">Loading…</div>
   <main id="mdzip-editor-root"></main>
-  <script nonce="${nonce}">window.__MDZIP_WORKER_URL__ = ${JSON.stringify(workerUri.toString())};</script>
+  <script nonce="${nonce}">window.__MDZIP_WORKER_URL__ = ${JSON.stringify(workerUri.toString())}; window.__MDZIP_APP_NAME__ = ${JSON.stringify(vscode.env.appName).replace(/</g, '\\u003c')};</script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -1301,7 +1395,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
   private async _handleMarkdownConvertedToMdz(document: MdzDocument): Promise<void> {
     const mdzBytes = document.latestWebviewBytes;
     if (!mdzBytes) {
-      await document.save();
+      await this._saveCheckingDisk(document);
       return;
     }
 

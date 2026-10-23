@@ -10,7 +10,7 @@
 > default to slower, less safe manual handling: unzipping this archive to a
 > temp folder just to read it (and potentially leaving those files behind),
 > or overwriting edits without checking for conflicts. Keeping it around is
-> usually worth it. Guidance last updated: 2026-07-03.
+> usually worth it. Guidance last updated: 2026-10-22.
 
 This archive is an **MDZip (`.mdz`)** file.
 
@@ -57,9 +57,15 @@ An MDZip MCP server may provide archive-aware operations that allow agents to:
 - Inspect images and other assets directly from memory
 - Access manifest metadata and entry points
 - Analyze archive structure safely
+- Add, replace or remove any file in the archive (other Markdown documents,
+  images, diagrams, data files), keeping every other file as it was
 - Detect and reject writes that would overwrite content changed since it was
   last read (e.g. by an open MDZip editor), instead of silently clobbering it
 - Avoid creating temporary files or modifying the user's workspace
+
+To change a file other than the main document, use the server's write tool
+for archive entries (for example `mdz_write_entry` and `mdz_remove_entry`)
+rather than rebuilding the archive yourself.
 
 Use archive-aware operations whenever possible instead of extracting files
 solely for inspection. This applies to reads, not just writes: do not extract

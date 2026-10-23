@@ -9,6 +9,7 @@ import { MdzEditorProvider, getNonce, postToWebviewSafely } from './mdzEditorPro
 import { MdzDiffPanel } from './mdzDiffPanel';
 import { initLogging, logInfo, logError } from './mdzLog';
 import { registerMdzLanguageModelTools } from './mdzLanguageModelTools';
+import { handleToolCall, type ToolResult } from './mdzToolHandlers';
 import { MdzArchiveCore } from '@mdzip/core-js';
 import {
   agentsMdAsset,
@@ -264,6 +265,15 @@ export interface MdzipTestApi {
    * so integration tests can verify the full VS Code save flow synchronously.
    */
   simulateWebviewChange(uri: vscode.Uri, bytes: Uint8Array): void;
+  /**
+   * Simulate what the manifestChanged message handler does (a rename or other
+   * manifest-only edit): patch the manifest, mark dirty, fire the dirty event.
+   */
+  simulateManifestChange(uri: vscode.Uri, manifest: unknown): Promise<void>;
+  /** The open document's current Markdown, or undefined if it isn't open. */
+  documentMarkdown(uri: vscode.Uri): string | undefined;
+  /** Run an MCP tool in-process, through the same handlers the MCP server uses. */
+  runMcpTool(name: string, args: Record<string, unknown>): Promise<ToolResult>;
   /** The user-profile mcp.json path `mdzip.enableUserMcp` writes to. For integration tests only. */
   getUserMcpConfigPath(): string;
   /**
@@ -289,21 +299,44 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
     args: [bundledServerPath],
   };
 
-  context.subscriptions.push(
-    vscode.lm.registerMcpServerDefinitionProvider('mdzip.bundled-mcp', {
-      provideMcpServerDefinitions() {
-        return [
-          new vscode.McpStdioServerDefinition(
-            BUNDLED_MCP_SERVER_LABEL,
-            process.execPath,
-            [bundledServerPath],
-            {},
-            String(context.extension.packageJSON.version || '0.0.0')
-          ),
-        ];
-      },
-    })
-  );
+  // VS Code's AI features (MCP server definitions, language model tools) may be
+  // missing or incomplete in editors built on VS Code (Cursor, Windsurf, older
+  // VSCodium) or in older VS Code. Each is registered only if present, and a
+  // failure is logged rather than stopping activation: everything registered
+  // after this point (commands, the MCP setup flows) must still work there.
+  // Typed here, not from @types/vscode: the extension supports VS Code 1.95,
+  // which predates these APIs (1.101).
+  type McpStdioServerDefinitionCtor = new (
+    label: string, command: string, args: string[], env: Record<string, string | number | null>, version?: string
+  ) => unknown;
+  type McpLm = {
+    registerMcpServerDefinitionProvider?: (id: string, provider: { provideMcpServerDefinitions(): unknown[] }) => vscode.Disposable;
+  };
+  const lm = (vscode as unknown as { lm?: McpLm }).lm;
+  const mcpDefinition = (vscode as unknown as { McpStdioServerDefinition?: McpStdioServerDefinitionCtor }).McpStdioServerDefinition;
+  if (typeof lm?.registerMcpServerDefinitionProvider === 'function' && typeof mcpDefinition === 'function') {
+    try {
+      context.subscriptions.push(
+        lm.registerMcpServerDefinitionProvider('mdzip.bundled-mcp', {
+          provideMcpServerDefinitions() {
+            return [
+              new mcpDefinition(
+                BUNDLED_MCP_SERVER_LABEL,
+                process.execPath,
+                [bundledServerPath],
+                {},
+                String(context.extension.packageJSON.version || '0.0.0')
+              ),
+            ];
+          },
+        })
+      );
+    } catch (error) {
+      logError('Could not register the MCP server definition provider', error);
+    }
+  } else {
+    logInfo(`${vscode.env.appName} has no MCP server definition API; the bundled MCP server can still be set up with the MDZip MCP commands.`);
+  }
 
   // Native VS Code Language Model Tools — for in-editor chat participants (Copilot Chat and
   // similar) that consume vscode.lm.registerTool directly, no MCP server or config required.
@@ -1243,6 +1276,9 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
   return {
     hasDocument(uri) { return MdzEditorProvider.hasDocumentForUri(uri); },
     simulateWebviewChange(uri, bytes) { MdzEditorProvider.simulateWebviewChange(uri, bytes); },
+    simulateManifestChange(uri, manifest) { return MdzEditorProvider.simulateManifestChange(uri, manifest); },
+    documentMarkdown(uri) { return MdzEditorProvider.documentMarkdown(uri); },
+    runMcpTool(name, args) { return handleToolCall(name, args); },
     getUserMcpConfigPath() { return getUserMcpConfigUri(context).fsPath; },
     runClaudeMcpRepairCheck() { return maybeRepairClaudeMcpConfig(context); },
   };
@@ -1780,6 +1816,7 @@ function buildWorkspaceAgentInstructionsBlock(): string {
     '1. Call `mdz_review_document` first with the `.mdz` `archivePath`.',
     '2. Use the returned `resolvedMarkdownPath`, `canonicalEntrypointPath`, and `entrypointSource` fields before deciding on write actions.',
     '3. For canonical markdown updates, call `upsert_canonical_document` instead of editing archive entries manually.',
+    '   To add, replace or remove any other file (other Markdown documents, images, diagrams, data files), use `mdz_write_entry` and `mdz_remove_entry`. Replacing or removing needs the file\'s `entryHash` from `mdz_read_text`, `mdz_read_image` or `mdz_list_entries` with `includeHashes`. Check the result\'s `postWriteValidation` for images nothing references and references that don\'t resolve.',
     '4. If a tool returns a machine-readable error with `nextAction`, follow that next action and retry.',
     '5. Do not extract archive entries to disk unless the user explicitly asks for extraction.',
     '6. Use lower-level tools (`mdz_list_entries`, `mdz_read_text`, `mdz_read_image`) only for follow-up detail checks.',

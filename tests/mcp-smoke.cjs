@@ -55,7 +55,11 @@ async function main() {
       await testCanonicalWriteNoMarkdownEntries(client, fixtures.noMarkdown);
       await testErrorPayloadConsistency(client, fixtures.canonicalSingle);
       await testHtmlImgTagReferencedImages(client, fixtures.htmlImageOnly);
-      console.log('MCP smoke tests passed: T1, T2, T4, T5, T6, T7, T8, T9, T10, T-img');
+      await testWriteEntry(client, fixtureRoot);
+      await testWriteEntryGuards(client, fixtureRoot);
+      await testWriteEntryKeepsImpliedEntryPoint(client, fixtures.fallbackSingleMarkdown);
+      await testRemoveEntry(client, fixtureRoot);
+      console.log('MCP smoke tests passed: T1, T2, T4, T5, T6, T7, T8, T9, T10, T-img, T-write, T-write-guards, T-write-entrypoint, T-remove');
     } finally {
       await client.close();
     }
@@ -441,6 +445,133 @@ async function testHtmlImgTagReferencedImages(client, archivePath) {
     'an image referenced only via a raw HTML <img> tag should still be picked up'
   );
   assert.equal(payload.images[0].path, 'assets/diagram.png');
+}
+
+// ── mdz_write_entry / mdz_remove_entry (mdzip-vscode#16) ──────────────────
+
+async function freshArchive(fixtureRoot, name, markdown = '# Doc\n\nSee ![chart](images/chart.png).\n') {
+  const archivePath = path.join(fixtureRoot, name);
+  await fs.writeFile(archivePath, await buildCanonicalArchive(markdown));
+  return archivePath;
+}
+
+async function call(client, name, args) {
+  return client.callTool({ name, arguments: args });
+}
+
+async function entryHashes(client, archivePath) {
+  const result = await call(client, 'mdz_list_entries', { archivePath, includeHashes: true });
+  assert.ok(!result.isError);
+  return Object.fromEntries(parseFirstTextJson(result).map((entry) => [entry.path, entry.entryHash]));
+}
+
+async function testWriteEntry(client, fixtureRoot) {
+  const archivePath = await freshArchive(fixtureRoot, 'write-entry.mdz');
+  const before = await entryHashes(client, archivePath);
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+
+  // Add an image inline (base64): the reference in index.md now resolves.
+  const added = await call(client, 'mdz_write_entry', { archivePath, entryPath: 'images/chart.png', contentBase64: png.toString('base64') });
+  assert.ok(!added.isError, extractTextContent(added));
+  const addedPayload = parseFirstTextJson(added);
+  assert.equal(addedPayload.created, true);
+  assert.equal(addedPayload.bytes, png.length);
+  assert.ok(addedPayload.changedPaths.includes('images/chart.png'));
+  assert.equal(addedPayload.postWriteValidation.isValid, true);
+  assert.deepEqual(addedPayload.postWriteValidation.orphanedAssetPaths, []);
+
+  // The image reads back, reporting the same entryHash.
+  const image = await call(client, 'mdz_read_image', { archivePath, entryPath: 'images/chart.png' });
+  assert.ok(!image.isError);
+  assert.ok(extractTextContent(image).includes(addedPayload.entryHash));
+
+  // Add a second document from a file on disk, and an unreferenced image (reported as orphaned).
+  const sourcePath = path.join(fixtureRoot, 'chapter-source.md');
+  await fs.writeFile(sourcePath, '# Chapter 2\r\n\r\nFrom disk.\r\n');
+  const chapter = await call(client, 'mdz_write_entry', { archivePath, entryPath: 'chapters/02.md', sourcePath });
+  assert.ok(!chapter.isError, extractTextContent(chapter));
+  const orphan = parseFirstTextJson(await call(client, 'mdz_write_entry', { archivePath, entryPath: 'images/unused.png', contentBase64: png.toString('base64') }));
+  assert.deepEqual(orphan.postWriteValidation.orphanedAssetPaths, ['images/unused.png']);
+
+  // Replace the chapter as text, using the hash from mdz_read_text.
+  const read = await call(client, 'mdz_read_text', { archivePath, entryPath: 'chapters/02.md' });
+  const { entryHash } = JSON.parse(extractAllTextContent(read)[1]);
+  const replaced = await call(client, 'mdz_write_entry', { archivePath, entryPath: 'chapters/02.md', content: '# Chapter 2\n\nReplaced.\n', expectedEntryHash: entryHash });
+  assert.ok(!replaced.isError, extractTextContent(replaced));
+  assert.equal(parseFirstTextJson(replaced).created, false);
+  const reread = await call(client, 'mdz_read_text', { archivePath, entryPath: 'chapters/02.md' });
+  assert.equal(extractTextContent(reread), '# Chapter 2\n\nReplaced.\n');
+
+  // Every entry the tool didn't write is unchanged.
+  const after = await entryHashes(client, archivePath);
+  assert.equal(after['index.md'], before['index.md'], 'index.md must be kept byte-for-byte');
+}
+
+async function testWriteEntryGuards(client, fixtureRoot) {
+  const archivePath = await freshArchive(fixtureRoot, 'write-guards.mdz');
+  const code = async (args) => {
+    const result = await call(client, 'mdz_write_entry', { archivePath, ...args });
+    assert.equal(result.isError, true, `expected an error for ${JSON.stringify(args)}`);
+    const payload = parseErrorPayload(result);
+    assertHasStandardErrorShape(payload);
+    return payload.code;
+  };
+  const indexHash = (await entryHashes(client, archivePath))['index.md'];
+
+  assert.equal(await code({ entryPath: 'index.md', content: 'x' }), 'ENTRY_EXISTS');
+  assert.equal(await code({ entryPath: 'index.md', content: 'x', expectedEntryHash: 'stale' }), 'CONTENT_CONFLICT');
+  assert.equal(await code({ entryPath: 'new.md', content: 'x', expectedEntryHash: indexHash }), 'ENTRY_NOT_FOUND');
+  assert.equal(await code({ entryPath: '../outside.png', content: 'x' }), 'INVALID_ENTRY_PATH');
+  // A leading slash means the archive root; the result reports the normalized path.
+  const rooted = await call(client, 'mdz_write_entry', { archivePath, entryPath: '/rooted.txt', content: 'x' });
+  assert.equal(parseFirstTextJson(rooted).entryPath, 'rooted.txt');
+  assert.equal(await code({ entryPath: 'manifest.json', content: '{}' }), 'MANIFEST_NOT_WRITABLE');
+  assert.equal(await code({ entryPath: 'Index.md', content: 'x' }), 'ENTRY_PATH_CASE_MISMATCH');
+  assert.equal(await code({ entryPath: 'a.md' }), 'MISSING_CONTENT');
+  assert.equal(await code({ entryPath: 'a.md', content: 'x', contentBase64: 'eA==' }), 'AMBIGUOUS_CONTENT');
+  assert.equal(await code({ entryPath: 'a.png', sourcePath: path.join(fixtureRoot, 'does-not-exist.png') }), 'SOURCE_NOT_READABLE');
+
+  // The canonicalContentHash from mdz_review_document is accepted for the main document too.
+  const review = parseFirstTextJson(await call(client, 'mdz_review_document', { archivePath }));
+  const viaReviewHash = await call(client, 'mdz_write_entry', { archivePath, entryPath: 'index.md', content: '# Doc\n\nRewritten.\n', expectedEntryHash: review.canonicalContentHash });
+  assert.ok(!viaReviewHash.isError, extractTextContent(viaReviewHash));
+}
+
+async function testWriteEntryKeepsImpliedEntryPoint(client, archivePath) {
+  // This archive's manifest doesn't name its entry point (only index.md implies it).
+  // Adding another root-level Markdown file must not change which file is the main document.
+  const result = await call(client, 'mdz_write_entry', { archivePath, entryPath: 'aaa-first.md', content: '# Another root file\n' });
+  assert.ok(!result.isError, extractTextContent(result));
+  assert.equal(parseFirstTextJson(result).entryPoint, 'index.md');
+  const review = parseFirstTextJson(await call(client, 'mdz_review_document', { archivePath }));
+  assert.equal(review.resolvedMarkdownPath, 'index.md');
+}
+
+async function testRemoveEntry(client, fixtureRoot) {
+  const archivePath = await freshArchive(fixtureRoot, 'remove-entry.mdz');
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]).toString('base64');
+  const added = parseFirstTextJson(await call(client, 'mdz_write_entry', { archivePath, entryPath: 'images/chart.png', contentBase64: png }));
+
+  const missingHash = await call(client, 'mdz_remove_entry', { archivePath, entryPath: 'images/chart.png' });
+  assert.equal(parseErrorPayload(missingHash).code, 'MISSING_EXPECTED_ENTRY_HASH');
+  const stale = await call(client, 'mdz_remove_entry', { archivePath, entryPath: 'images/chart.png', expectedEntryHash: 'stale' });
+  assert.equal(parseErrorPayload(stale).code, 'CONTENT_CONFLICT');
+  const indexHash = (await entryHashes(client, archivePath))['index.md'];
+  const entryPoint = await call(client, 'mdz_remove_entry', { archivePath, entryPath: 'index.md', expectedEntryHash: indexHash });
+  assert.equal(parseErrorPayload(entryPoint).code, 'ENTRY_IS_ENTRY_POINT');
+  const missing = await call(client, 'mdz_remove_entry', { archivePath, entryPath: 'images/nope.png', expectedEntryHash: 'x' });
+  assert.equal(parseErrorPayload(missing).code, 'ENTRY_NOT_FOUND');
+
+  const removed = await call(client, 'mdz_remove_entry', { archivePath, entryPath: 'images/chart.png', expectedEntryHash: added.entryHash });
+  assert.ok(!removed.isError, extractTextContent(removed));
+  const payload = parseFirstTextJson(removed);
+  assert.equal(payload.removedPath, 'images/chart.png');
+  // index.md still points at the removed image, and the result says so.
+  assert.ok(
+    JSON.stringify(payload.postWriteValidation.unresolvedReferences).includes('chart.png'),
+    'the dangling image reference must be reported'
+  );
+  assert.equal((await entryHashes(client, archivePath))['images/chart.png'], undefined);
 }
 
 function parseFirstTextJson(result) {

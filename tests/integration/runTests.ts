@@ -12,6 +12,9 @@ async function main(): Promise<void> {
   const fixturePath = path.join(extensionDevelopmentPath, 'tests', 'integration', 'fixture');
 
   await runTests({
+    // VSCODE_TEST_VERSION=1.95.0 runs the suite in the oldest supported VS Code
+    // (package.json engines.vscode). Default: the latest stable release.
+    version: process.env.VSCODE_TEST_VERSION || undefined,
     extensionDevelopmentPath,
     extensionTestsPath,
     launchArgs: [fixturePath],

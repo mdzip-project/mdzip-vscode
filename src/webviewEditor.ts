@@ -26,9 +26,21 @@ declare const acquireVsCodeApi: () => VsCodeApi;
 // which here follows the VS Code theme.
 const VSCODE_THEME_ICON = '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M15.434 1.72887L12.14 0.144875C12.002 0.078875 11.855 0.046875 11.709 0.046875C11.353 0.046875 11.18 0.211875 11.155 0.228875C11.073 0.270875 11.005 0.337875 11.004 0.338875L4.698 6.08888L1.951 4.00488C1.832 3.91388 1.69 3.86987 1.548 3.86987C1.387 3.86987 1.226 3.92788 1.1 4.04288L0.219 4.84387C0.074 4.97587 0.001 5.15688 0.001 5.33687C0.001 5.51687 0.073 5.69688 0.218 5.82888L2.6 8.00088L0.217 10.1719C0.072 10.3039 0 10.4839 0 10.6639C0 10.8439 0.073 11.0249 0.218 11.1569L1.099 11.9579C1.226 12.0729 1.386 12.1309 1.547 12.1309C1.688 12.1309 1.83 12.0859 1.95 11.9959L4.697 9.91187L11.003 15.6619C11.003 15.6619 11.072 15.7299 11.155 15.7719C11.179 15.7889 11.353 15.9529 11.709 15.9529C11.855 15.9529 12.003 15.9209 12.141 15.8549L15.435 14.2709C15.781 14.1049 16.001 13.7539 16.001 13.3699V2.62888C16.001 2.24487 15.781 1.89488 15.435 1.72787L15.434 1.72887ZM7.217 7.99988L12.002 4.36987V11.6299L7.217 7.99988Z"/></svg>';
 
-/** What the color scheme menu's System choice follows here: the VS Code theme. */
+/**
+ * The editor running the extension, as users know it: "VS Code" for VS Code
+ * itself (and Insiders), otherwise its own name (Cursor, VSCodium, Windsurf),
+ * so labels don't say "VS Code" in an editor that isn't.
+ */
+const RAW_APP_NAME = (window as unknown as { __MDZIP_APP_NAME__?: string }).__MDZIP_APP_NAME__ ?? '';
+const IS_VSCODE = RAW_APP_NAME === '' || /^Visual Studio Code\b/.test(RAW_APP_NAME);
+const APP_NAME = IS_VSCODE ? 'VS Code' : RAW_APP_NAME;
+
+/** What the color scheme menu's System choice follows here: the editor's theme. */
 function vscodeThemeSource(): MdzipSystemColorScheme {
-  return { colorScheme: detectColorScheme(), label: 'VS Code theme', icon: VSCODE_THEME_ICON };
+  // The VS Code logo only in VS Code; other editors get the library's default icon.
+  return IS_VSCODE
+    ? { colorScheme: detectColorScheme(), label: 'VS Code theme', icon: VSCODE_THEME_ICON }
+    : { colorScheme: detectColorScheme(), label: `${APP_NAME} theme` };
 }
 
 const PREVIEW_WIDTHS: readonly MdzipPreviewWidthChoice[] = ['narrow', 'default', 'wide', 'full'];
@@ -603,7 +615,7 @@ function createEditor(
     resolveDroppedUris: isMdz ? requestDroppedFiles : undefined,
     hostFileActions: isMdz ? [{
       id: 'open-in-vscode',
-      label: 'Open in VS Code Editor',
+      label: `Open in ${APP_NAME} Editor`,
       run: (file) => vscode.postMessage({ type: 'openArchiveEntry', path: file.path }),
     }] : undefined,
     initialLayout,

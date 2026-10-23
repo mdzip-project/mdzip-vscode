@@ -8,6 +8,9 @@ import * as vscode from 'vscode';
 interface MdzipTestApi {
   hasDocument(uri: vscode.Uri): boolean;
   simulateWebviewChange(uri: vscode.Uri, bytes: Uint8Array): void;
+  simulateManifestChange(uri: vscode.Uri, manifest: unknown): Promise<void>;
+  documentMarkdown(uri: vscode.Uri): string | undefined;
+  runMcpTool(name: string, args: Record<string, unknown>): Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }>;
 }
 
 function getApi(): MdzipTestApi {
@@ -160,5 +163,57 @@ suite('MDZip save integration', () => {
       await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
       await config.update('editorAssociations', previous, vscode.ConfigurationTarget.Global);
     }
+  });
+
+  // mdzip-vscode#18: an MCP write to an archive open (and clean) in the MDZip
+  // editor must survive the editor's next rename and save. Before the fix the
+  // editor kept its pre-MCP bytes and wrote them back.
+  test('mdz: an MCP write to an open archive survives a later rename and save', async () => {
+    const mdzPath = path.join(tmpDir, 'mcp-then-rename.mdz');
+    fs.copyFileSync(path.join(__dirname, '..', '..', 'tests', 'integration', 'fixture', 'archive-entries.mdz'), mdzPath);
+    const uri = vscode.Uri.file(mdzPath);
+    await vscode.commands.executeCommand('vscode.openWith', uri, 'mdzip.mdzEditor');
+    const api = getApi();
+    await waitForDocument(api, uri);
+    // Let the webview load and report its workspace back, as it does for a user.
+    await new Promise(r => setTimeout(r, 1500));
+
+    const text = (result: { content: Array<{ text?: string }>; isError?: boolean }): string => {
+      assert.ok(!result.isError, `tool failed: ${result.content[0]?.text}`);
+      return result.content[0]?.text ?? '';
+    };
+    const review = JSON.parse(text(await api.runMcpTool('mdz_review_document', { archivePath: mdzPath })));
+    text(await api.runMcpTool('upsert_canonical_document', {
+      archivePath: mdzPath,
+      content: '# Written by the agent\n',
+      expectedContentHash: review.canonicalContentHash,
+    }));
+
+    // The editor notices the change on disk and reloads (it has no unsaved edits).
+    const deadline = Date.now() + 10_000;
+    while (!/Written by the agent/.test(api.documentMarkdown(uri) ?? '')) {
+      if (Date.now() > deadline) throw new Error('the editor did not reload the MCP write');
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    const manifest = JSON.parse(text(await api.runMcpTool('mdz_read_text', { archivePath: mdzPath, entryPath: 'manifest.json' })));
+    await api.simulateManifestChange(uri, { ...manifest, title: 'Renamed after the agent' });
+    await saveActiveDocument();
+    await new Promise(r => setTimeout(r, 500));
+
+    // mdz_review_document returns its metadata first, then the Markdown.
+    const after = await api.runMcpTool('mdz_review_document', { archivePath: mdzPath });
+    assert.ok(!after.isError);
+    const markdown = after.content.map((part) => part.text ?? '').join('\n');
+    assert.match(markdown, /Written by the agent/, 'the MCP change must still be in the file');
+    const savedManifest = JSON.parse(text(await api.runMcpTool('mdz_read_text', { archivePath: mdzPath, entryPath: 'manifest.json' })));
+    assert.equal(savedManifest.title, 'Renamed after the agent');
+  });
+
+  // Leave nothing open for the suites that follow (they write files in the
+  // workspace folder, which an editor left open can hold on Windows).
+  teardown(async () => {
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+    await new Promise(r => setTimeout(r, 300));
   });
 });

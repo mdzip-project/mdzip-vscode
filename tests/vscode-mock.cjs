@@ -7,6 +7,27 @@ function files() {
   return (global.__vscodeMockFiles = global.__vscodeMockFiles ?? new Map());
 }
 
+// Modification times, bumped on every mock write. Tests that change a file
+// "from outside" call global.__vscodeMockTouch(path) as a real write would.
+function mtimes() {
+  return (global.__vscodeMockMtimes = global.__vscodeMockMtimes ?? new Map());
+}
+global.__vscodeMockClock = global.__vscodeMockClock ?? 1;
+global.__vscodeMockTouch = global.__vscodeMockTouch ?? ((key) => {
+  global.__vscodeMockClock += 1;
+  mtimes().set(key, global.__vscodeMockClock);
+});
+
+// File system watchers created by the code under test; tests fire their
+// callbacks with global.__vscodeMockFireWatchers('change' | 'create').
+global.__vscodeMockWatchers = global.__vscodeMockWatchers ?? [];
+global.__vscodeMockFireWatchers = global.__vscodeMockFireWatchers ?? ((kind = 'change') => {
+  for (const watcher of global.__vscodeMockWatchers) {
+    if (watcher.disposed) continue;
+    for (const cb of watcher[kind]) cb();
+  }
+});
+
 function readOnlyFiles() {
   return (global.__vscodeMockReadOnlyFiles = global.__vscodeMockReadOnlyFiles ?? new Set());
 }
@@ -124,8 +145,16 @@ const window = {
   },
 };
 
+class CancellationError extends Error {
+  constructor() {
+    super('Canceled');
+    this.name = 'Canceled';
+  }
+}
+
 module.exports = {
   Uri,
+  CancellationError,
   EventEmitter,
   RelativePattern,
   MarkdownString,
@@ -148,6 +177,7 @@ module.exports = {
       async writeFile(uri, bytes) {
         const key = uri.path ?? uri.fsPath;
         files().set(key, bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+        global.__vscodeMockTouch(key);
       },
       async delete(uri) {
         files().delete(uri.path ?? uri.fsPath);
@@ -163,18 +193,24 @@ module.exports = {
         return {
           type: 1,
           ctime: 0,
-          mtime: 0,
+          mtime: mtimes().get(key) ?? 0,
           size: data.length,
           permissions: readOnlyFiles().has(key) ? 1 : undefined,
         };
       },
     },
-    createFileSystemWatcher(_pattern) {
-      return {
-        onDidChange(_cb) { return { dispose() {} }; },
-        onDidCreate(_cb) { return { dispose() {} }; },
-        dispose() {},
+    createFileSystemWatcher(pattern) {
+      const watcher = {
+        pattern,
+        change: [],
+        create: [],
+        disposed: false,
+        onDidChange(cb) { watcher.change.push(cb); return { dispose() {} }; },
+        onDidCreate(cb) { watcher.create.push(cb); return { dispose() {} }; },
+        dispose() { watcher.disposed = true; },
       };
+      global.__vscodeMockWatchers.push(watcher);
+      return watcher;
     },
   },
 };

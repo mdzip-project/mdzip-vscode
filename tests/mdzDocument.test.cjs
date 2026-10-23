@@ -317,3 +317,144 @@ test('readOnly clears after a successful save to the same path (proves current w
   doc.dispose();
   setRealReadOnly(filePath, false);
 });
+
+// ── Changes on disk from another writer (mdzip-vscode#18) ─────────────────
+// Actor A is the open MDZip editor (an MdzDocument); actor B is anything else
+// that writes the file, such as the bundled MCP server. B's change must never
+// be silently overwritten by A's later save or rename.
+
+const { MdzDiskConflictError } = require('../dist/test/mdzDocument.cjs');
+
+/** Another program writing the file (the mock's own writeFile is actor A's). */
+function externalWrite(posixPath, bytes) {
+  global.__vscodeMockFiles.set(posixPath, bytes);
+  global.__vscodeMockTouch(posixPath);
+}
+
+async function archive(markdown, title = 'doc') {
+  const { buildNewArchiveBytesWithTitle } = await import('@mdzip/editor');
+  return buildNewArchiveBytesWithTitle(markdown, title);
+}
+
+async function markdownOf(bytes) {
+  const { MdzipWorkspaceService } = await import('@mdzip/editor');
+  const service = await MdzipWorkspaceService.open(bytes, { sourceFormat: 'mdz', fileName: 'x.mdz' });
+  return service.currentText;
+}
+
+test('#18: a clean editor reloads an external write and drops its stale webview bytes; a later rename keeps the write', async () => {
+  seedFs({ '/a.mdz': await archive('# Original\n') });
+  const doc = await MdzDocument.create(fakeUri('/a.mdz'));
+  // The webview reports its (unchanged) workspace, as it does after loading.
+  doc.updateFromWebview(diskRead('/a.mdz'));
+
+  externalWrite('/a.mdz', await archive('# Written by the agent\n'));
+  assert.equal(await doc.checkDisk(), 'reloaded');
+  assert.equal(doc.latestWebviewBytes, undefined, 'stale webview bytes must be dropped on reload');
+
+  // Rename: a manifest-only change, then save.
+  await doc.applyManifest({ title: 'Renamed' });
+  doc.markDirty();
+  await doc.save();
+  assert.match(await markdownOf(diskRead('/a.mdz')), /Written by the agent/);
+  doc.dispose();
+});
+
+test('#18: with unsaved edits, an external write is reported once and a save refuses to overwrite it', async () => {
+  seedFs({ '/b.mdz': await archive('# Original\n') });
+  const doc = await MdzDocument.create(fakeUri('/b.mdz'));
+  let reported = 0;
+  doc.onDidChangeOnDisk(() => { reported += 1; });
+  doc.updateFromWebview(await archive('# My unsaved edit\n'));
+  doc.markDirty();
+
+  const agentBytes = await archive('# Written by the agent\n');
+  externalWrite('/b.mdz', agentBytes);
+  assert.equal(await doc.checkDisk(), 'conflict');
+  assert.equal(await doc.checkDisk(), 'conflict');
+  assert.equal(reported, 1, 'the change is reported once, not on every watcher event');
+  assert.equal(doc.isDirty, true, 'unsaved edits are kept');
+
+  await assert.rejects(doc.save(), MdzDiskConflictError);
+  assert.deepEqual(diskRead('/b.mdz'), agentBytes, 'a refused save writes nothing');
+
+  await doc.save({ overwrite: true });
+  assert.match(await markdownOf(diskRead('/b.mdz')), /My unsaved edit/, 'overwrite is the user\'s explicit choice');
+  doc.dispose();
+});
+
+test('#18: an external write after the editor\'s own save is still detected, even if the save\'s watcher event never arrives', async () => {
+  seedFs({ '/c.mdz': await archive('# Original\n') });
+  const doc = await MdzDocument.create(fakeUri('/c.mdz'));
+  doc.updateFromWebview(await archive('# Saved by the editor\n'));
+  doc.markDirty();
+  await doc.save();
+  // (No checkDisk() for the editor's own write: its watcher event was lost.)
+
+  externalWrite('/c.mdz', await archive('# Written by the agent\n'));
+  assert.equal(await doc.checkDisk(), 'reloaded');
+  assert.match(doc.currentMarkdown, /Written by the agent/);
+  doc.dispose();
+});
+
+test('#18: the editor\'s own save is not mistaken for an external change', async () => {
+  seedFs({ '/d.mdz': await archive('# Original\n') });
+  const doc = await MdzDocument.create(fakeUri('/d.mdz'));
+  let reloads = 0;
+  doc.onDidChange((event) => { if (event.reason === 'reload') reloads += 1; });
+  doc.updateFromWebview(await archive('# Saved by the editor\n'));
+  doc.markDirty();
+  await doc.save();
+  assert.equal(await doc.checkDisk(), 'unchanged');
+  assert.equal(reloads, 0);
+  doc.dispose();
+});
+
+test('#18: a file that was only touched (same content) is not a change', async () => {
+  const bytes = await archive('# Original\n');
+  seedFs({ '/e.mdz': bytes });
+  const doc = await MdzDocument.create(fakeUri('/e.mdz'));
+  doc.markDirty();
+  externalWrite('/e.mdz', bytes.slice());
+  assert.equal(await doc.checkDisk(), 'unchanged');
+  await doc.save(); // no conflict
+  doc.dispose();
+});
+
+test('#18: keeping my changes over a change on disk lets the next save replace it', async () => {
+  seedFs({ '/f.mdz': await archive('# Original\n') });
+  const doc = await MdzDocument.create(fakeUri('/f.mdz'));
+  doc.updateFromWebview(await archive('# Mine\n'));
+  doc.markDirty();
+  externalWrite('/f.mdz', await archive('# Theirs\n'));
+  assert.equal(await doc.checkDisk(), 'conflict');
+
+  await doc.keepChangesOverDisk();
+  assert.equal(doc.changedOnDisk, false);
+  await doc.save();
+  assert.match(await markdownOf(diskRead('/f.mdz')), /Mine/);
+  doc.dispose();
+});
+
+test('#18: the file watcher triggers the check (debounced)', async () => {
+  seedFs({ '/g.mdz': await archive('# Original\n') });
+  const doc = await MdzDocument.create(fakeUri('/g.mdz'));
+  const reloaded = new Promise((resolve) => doc.onDidChange((event) => { if (event.reason === 'reload') resolve(); }));
+  externalWrite('/g.mdz', await archive('# Written by the agent\n'));
+  global.__vscodeMockFireWatchers('change');
+  global.__vscodeMockFireWatchers('change');
+  await Promise.race([reloaded, new Promise((_, reject) => setTimeout(() => reject(new Error('no reload within 2s')), 2000))]);
+  assert.match(doc.currentMarkdown, /Written by the agent/);
+  doc.dispose();
+});
+
+test('#18: markdown (.md) documents get the same protection', async () => {
+  seedFs({ '/h.md': '# Original\n' });
+  const doc = await MdzDocument.create(fakeUri('/h.md'));
+  doc.updateFromWebview(enc('# Mine\n'));
+  doc.markDirty();
+  externalWrite('/h.md', enc('# Theirs\n'));
+  await assert.rejects(doc.save(), MdzDiskConflictError);
+  assert.equal(new TextDecoder().decode(diskRead('/h.md')), '# Theirs\n');
+  doc.dispose();
+});
