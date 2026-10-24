@@ -1004,7 +1004,9 @@ function changedPathsOf(mutation: { archivePaths: string[] }, paths: string[]): 
 
 async function postWriteValidation(bytes: Uint8Array): Promise<object> {
   const validation = await MdzArchiveCore.validate(bytes);
-  const orphans = await MdzArchiveCore.findOrphanedAssets(bytes);
+  // Every Markdown file, not just the entry point: an image used only by a
+  // second document is still in use, and an agent told otherwise may delete it.
+  const orphans = await MdzArchiveCore.findOrphanedAssets(bytes, { scanMode: 'all-markdown' });
   return {
     isValid: validation.isValid,
     errors: validation.errors,
@@ -1110,7 +1112,7 @@ async function readEntryAsUtf8Text(archive: MdzArchiveCore, entryPath: string): 
   try {
     const bytes = await archive.readBytes(entryPath);
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    if (text.includes(' ')) {
+    if (text.includes('\u0000')) {
       return undefined;
     }
     return text;

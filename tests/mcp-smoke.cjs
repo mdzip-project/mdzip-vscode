@@ -502,6 +502,15 @@ async function testWriteEntry(client, fixtureRoot) {
   const reread = await call(client, 'mdz_read_text', { archivePath, entryPath: 'chapters/02.md' });
   assert.equal(extractTextContent(reread), '# Chapter 2\n\nReplaced.\n');
 
+  // An image used only by the second document (here with a title) is in use, not orphaned.
+  const rereadHash = JSON.parse(extractAllTextContent(reread)[1]).entryHash;
+  const usesImage = await call(client, 'mdz_write_entry', {
+    archivePath, entryPath: 'chapters/02.md', expectedEntryHash: rereadHash,
+    content: '# Chapter 2\n\n![Unused no more](../images/unused.png "A tooltip")\n'
+  });
+  assert.ok(!usesImage.isError, extractTextContent(usesImage));
+  assert.deepEqual(parseFirstTextJson(usesImage).postWriteValidation.orphanedAssetPaths, []);
+
   // Every entry the tool didn't write is unchanged.
   const after = await entryHashes(client, archivePath);
   assert.equal(after['index.md'], before['index.md'], 'index.md must be kept byte-for-byte');

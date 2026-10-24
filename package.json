@@ -2,7 +2,7 @@
   "name": "mdzip-vscode",
   "displayName": "MDZip Editor",
   "description": "Edit MDZip (.mdz) files in single document mode — Markdown plus its images in one portable file — with live preview. Also opens plain Markdown (.md) files in the same editor via Open With.",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "icon": "media/icons/mdzip-marketplace-icon.png",
   "publisher": "mdzip-project",
   "license": "Apache-2.0",
@@ -901,6 +901,7 @@
     "vsce": "^2.15.0"
   },
   "dependencies": {
+    "@codemirror/view": "^6.43.15",
     "@mdzip/core-js": "^2.1.1",
     "@mdzip/editor": "^2.4.0",
     "@modelcontextprotocol/sdk": "^1.17.4",

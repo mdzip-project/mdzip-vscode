@@ -214,7 +214,9 @@ export class MdzDocument implements vscode.CustomDocument {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const workspace = this._service.snapshot().workspace as any;
     const orphanedAssets = this._sourceFormat === 'mdz'
-      ? await MdzArchiveCore.findOrphanedAssets(this.currentArchiveBytes())
+      // Every Markdown file, not just the entry point: an image used only by a
+      // second document is in use (the contents pane offers to delete orphans).
+      ? await MdzArchiveCore.findOrphanedAssets(this.currentArchiveBytes(), { scanMode: 'all-markdown' })
       : undefined;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const assets = await Promise.all((workspace.assets as any[]).map(async (asset: any) => {

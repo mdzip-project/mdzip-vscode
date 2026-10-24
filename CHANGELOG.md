@@ -1,5 +1,11 @@
 # Change Log
 
+## [1.7.1] - Unreleased
+
+### Fixed
+- When an `.mdz` file changes on disk while it's open (for example, an AI agent edits it) and the editor reloads it, you now stay where you were: on the same file, scrolled to the same place in the preview and the source, with the contents pane still open. Text added above where you're reading doesn't move you. Before, the editor jumped back to the top of the main document and, if you had changed the layout, closed the contents pane.
+- Images used by a second document in an `.mdz` are no longer reported as unused. The checks looked only at the main document, so the contents pane marked those images as unused (and offered to delete them), and after an AI agent wrote a file the MCP server could tell it to delete images that were in use. Every document is checked now. The contents pane part needs MDZip editor 2.4.1.
+
 ## [1.7.0] - 2026-10-22
 
 ### Added

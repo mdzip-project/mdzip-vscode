@@ -1,4 +1,5 @@
 import {
+  MDZIP_HEADING_ID_PREFIX,
   MdzipWorkspaceView,
   computeDocumentStats,
   type MdzipColorScheme,
@@ -12,6 +13,7 @@ import {
   type MdzipWorkspaceSnapshot,
 } from '@mdzip/editor';
 import { mdzipMermaidExtension } from '@mdzip/editor/mermaid';
+import { EditorView } from '@codemirror/view';
 import { buildStatsReport } from './mdzStats';
 import { type MarkdownImageResult } from './mdLinkedImage';
 
@@ -372,6 +374,168 @@ function readCurrentLayout(): MdzipWorkspaceLayout {
   return currentLayout;
 }
 
+// Whether the contents pane is open, read from the library's toggle button
+// (aria-pressed on data-ref="nav-btn"); there is no public getter.
+function readNavigationOpen(): boolean {
+  return rootElement.querySelector('[data-ref="nav-btn"]')?.getAttribute('aria-pressed') === 'true';
+}
+
+// Bumped on every open, so a slow reload can't restore its file over a newer one's.
+let openGeneration = 0;
+
+// What a reload puts back: the open file, the contents pane, the scroll position.
+interface ViewState {
+  path: string | null;
+  navigationOpen: boolean;
+  scroll: ScrollPosition | null;
+}
+// Set from a reload's start until it has restored the view.
+let pendingViewState: ViewState | null = null;
+
+// Where the user was scrolled to, kept across a reload. The preview is
+// remembered as the heading at or above the top of the pane plus how far past
+// it the user had scrolled, because an edit above that point (or images still
+// loading) moves everything below it; previewTop is the fallback for a file
+// with no headings. The source pane is remembered by line (see SourcePosition).
+interface ScrollPosition {
+  headingId: string | null;
+  headingOffset: number;
+  previewTop: number;
+  source: SourcePosition | null;
+}
+
+// The source pane's top line, by number and text, and how far past its top the
+// pane was scrolled (negative: the line starts below the top). Not a pixel
+// offset: CodeMirror only measures the lines on screen, so after a reload the
+// same scrollTop lands on a different line. The first non-blank line at the
+// top is used, and found again by its text, nearest the old line number, so
+// lines added above it don't move the view.
+interface SourcePosition {
+  line: number;
+  text: string;
+  offset: number;
+}
+
+function sourceView(): EditorView | null {
+  const dom = rootElement.querySelector<HTMLElement>('.cm-editor');
+  const view = dom ? EditorView.findFromDOM(dom) : null;
+  // Hidden in the preview-only layout.
+  return view && view.dom.offsetParent !== null ? view : null;
+}
+
+function readSourcePosition(): SourcePosition | null {
+  const view = sourceView();
+  if (!view || view.scrollDOM.scrollTop <= 0) { return null; }
+  const height = view.scrollDOM.getBoundingClientRect().top - view.documentTop;
+  const doc = view.state.doc;
+  let line = doc.lineAt(view.lineBlockAtHeight(height).from);
+  for (let n = line.number; n <= Math.min(doc.lines, line.number + 50); n++) {
+    if (doc.line(n).text.trim()) { line = doc.line(n); break; }
+  }
+  return { line: line.number, text: line.text, offset: height - view.lineBlockAt(line.from).top };
+}
+
+function restoreSourcePosition(position: SourcePosition): void {
+  const view = sourceView();
+  if (!view) { return; }
+  const doc = view.state.doc;
+  const start = Math.min(position.line, doc.lines);
+  let found = start;
+  if (doc.line(start).text !== position.text) {
+    for (let distance = 1; distance < doc.lines; distance++) {
+      const above = start - distance;
+      const below = start + distance;
+      if (above >= 1 && doc.line(above).text === position.text) { found = above; break; }
+      if (below <= doc.lines && doc.line(below).text === position.text) { found = below; break; }
+      if (above < 1 && below > doc.lines) { break; }
+    }
+  }
+  view.dispatch({ effects: EditorView.scrollIntoView(doc.line(found).from, { y: 'start', yMargin: -position.offset }) });
+}
+
+function previewPane(): HTMLElement | null {
+  const pane = rootElement.querySelector<HTMLElement>('[data-ref="preview-pane"]');
+  // Hidden in the source-only layout.
+  return pane && pane.offsetParent !== null ? pane : null;
+}
+
+function readScrollPosition(): ScrollPosition {
+  const pane = previewPane();
+  let headingId: string | null = null;
+  let headingOffset = 0;
+  if (pane && pane.scrollTop > 0) {
+    const paneTop = pane.getBoundingClientRect().top;
+    for (const heading of Array.from(pane.querySelectorAll<HTMLElement>('h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]'))) {
+      const top = heading.getBoundingClientRect().top;
+      if (top - paneTop > 1) { break; }
+      headingId = heading.id;
+      headingOffset = paneTop - top;
+    }
+  }
+  return { headingId, headingOffset, previewTop: pane?.scrollTop ?? 0, source: readSourcePosition() };
+}
+
+// Keeps a restored scroll position in place while the preview settles (later
+// chunks mounting, images loading, the library's own anchor pin), until the
+// user scrolls, clicks or types, or the next open.
+let releaseScrollHold: (() => void) | null = null;
+
+function holdScroll(apply: () => void): void {
+  releaseScrollHold?.();
+  const content = rootElement.querySelector<HTMLElement>('[data-ref="preview-content"]');
+  const observer = typeof ResizeObserver === 'undefined' || !content ? null : new ResizeObserver(() => apply());
+  if (observer && content) { observer.observe(content); }
+  const userEvents = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
+  const release = (): void => {
+    observer?.disconnect();
+    for (const type of userEvents) { window.removeEventListener(type, release, true); }
+    if (releaseScrollHold === release) { releaseScrollHold = null; }
+  };
+  for (const type of userEvents) { window.addEventListener(type, release, true); }
+  releaseScrollHold = release;
+  apply();
+}
+
+async function restoreScrollPosition(view: MdzipWorkspaceView, position: ScrollPosition, generation: number): Promise<void> {
+  await view.whenRendered();
+  if (generation !== openGeneration || view !== editor) { return; }
+  await restorePreviewScroll(view, position, generation);
+  // The source pane last: in split layout, restoring the preview scrolls the
+  // source along with it.
+  if (generation !== openGeneration || view !== editor || !position.source) { return; }
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  if (generation !== openGeneration || view !== editor) { return; }
+  restoreSourcePosition(position.source);
+}
+
+async function restorePreviewScroll(view: MdzipWorkspaceView, position: ScrollPosition, generation: number): Promise<void> {
+  const pane = previewPane();
+  if (!pane) { return; }
+  // scrollToAnchor() finds a heading not drawn yet (further down a long file)
+  // only by its plain name, without the id prefix the preview adds.
+  const anchor = position.headingId?.startsWith(MDZIP_HEADING_ID_PREFIX)
+    ? position.headingId.slice(MDZIP_HEADING_ID_PREFIX.length)
+    : position.headingId;
+  if (position.headingId && anchor && await view.scrollToAnchor(anchor)) {
+    if (generation !== openGeneration || view !== editor) { return; }
+    // Looked up on every pass: the preview can re-render while it settles,
+    // replacing the heading element.
+    const selector = `[id="${CSS.escape(position.headingId)}"]`;
+    if (pane.querySelector(selector)) {
+      holdScroll(() => {
+        const target = pane.querySelector<HTMLElement>(selector);
+        if (target) {
+          pane.scrollTop += target.getBoundingClientRect().top - pane.getBoundingClientRect().top + position.headingOffset;
+        }
+      });
+      return;
+    }
+  }
+  if (position.previewTop > 0) {
+    holdScroll(() => { pane.scrollTop = position.previewTop; });
+  }
+}
+
 window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | OpenWorkspaceDirectMessage | DocumentTextMessage | PackFilesMessage>) => {
   const message = event.data;
   if ((message as { type?: string })?.type === 'droppedFiles') {
@@ -433,6 +597,26 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
   // is actually viewing. Without this, the library's openWorkspace() reset would
   // silently snap an edited/split view back to preview when a file changes on disk.
   const layout = isFirst ? normalizeLayout(message.layout) : readCurrentLayout();
+  // A reload (the file changed on disk) re-opens the whole archive, which
+  // shows the entry point again; keep the file the user was reading and,
+  // when the editor is re-created below, the contents pane open or closed.
+  // A reload that arrives while the previous one is still restoring (an agent
+  // making several changes in a row) reuses what that one saved: read now, the
+  // view would be showing the entry point mid-reload.
+  const viewState: ViewState | null = isFirst ? null : pendingViewState ?? {
+    path: editor?.getCurrentPath() ?? null,
+    navigationOpen: readNavigationOpen(),
+    scroll: readScrollPosition(),
+  };
+  pendingViewState = viewState;
+  const previousPath = viewState?.path ?? null;
+  const navigationOpen = viewState?.navigationOpen ?? false;
+  const scrollPosition = viewState?.scroll ?? null;
+  const generation = ++openGeneration;
+  const restoreDone = (): void => {
+    if (generation === openGeneration) { pendingViewState = null; }
+  };
+  releaseScrollHold?.();
 
   if (!editor) {
     currentLayout = layout;
@@ -444,10 +628,18 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
     rootElement.replaceChildren();
     currentLayout = layout;
     currentSourceFormat = message.sourceFormat;
-    editor = createEditor(currentLayout, currentSourceFormat);
+    editor = createEditor(currentLayout, currentSourceFormat, navigationOpen);
     // destroy() above terminates the worker paired with the old editor instance.
     currentWorker = createArchiveWorker();
   }
+  const openedEditor = editor;
+  const restorePath = async (): Promise<void> => {
+    if (!previousPath || generation !== openGeneration || openedEditor !== editor) { return; }
+    // openPath() is false when the file is gone: the entry point stays open,
+    // at its top.
+    if (openedEditor.getCurrentPath() !== previousPath && !(await openedEditor.openPath(previousPath))) { return; }
+    if (scrollPosition) { await restoreScrollPosition(openedEditor, scrollPosition, generation); }
+  };
 
   if (message.type === 'openWorkspaceDirect') {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -492,6 +684,8 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
     });
     if (isFirst) {
       void openPromise.finally(() => { loadingEl?.remove(); });
+    } else {
+      void openPromise.then(restorePath).catch(() => { /* reported by the open itself */ }).finally(restoreDone);
     }
     return;
   }
@@ -503,6 +697,8 @@ window.addEventListener('message', (event: MessageEvent<OpenWorkspaceMessage | O
   });
   if (isFirst) {
     void openPromise.finally(() => { loadingEl?.remove(); });
+  } else {
+    void openPromise.then(restorePath).catch(() => { /* reported by the open itself */ }).finally(restoreDone);
   }
 });
 
@@ -593,7 +789,8 @@ function detectColorScheme(): MdzipColorScheme {
 
 function createEditor(
   initialLayout: MdzipWorkspaceLayout,
-  sourceFormat: MdzipSourceFormat
+  sourceFormat: MdzipSourceFormat,
+  navigationOpen = false
 ): MdzipWorkspaceView {
   const isMdz = sourceFormat === 'mdz';
   return new MdzipWorkspaceView(rootElement, {
@@ -607,7 +804,7 @@ function createEditor(
       // redundant here.
       search: false,
     },
-    navigationButtonActive: false,
+    navigationButtonActive: navigationOpen,
     // Right-click a file in the tree: open it in a VS Code editor (draw.io for a
     // .drawio.svg, the PDF viewer for a .pdf, ...), straight from the archive.
     // Shift+drag from VS Code's Explorer onto the file tree: the drop carries
