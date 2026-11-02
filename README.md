@@ -101,6 +101,7 @@ Right-click a file in the MDZip editor's file tree and choose **Open in VS Code 
 
 - a draw.io diagram (`.drawio.svg`, `.drawio`) in the [Draw.io Integration](https://marketplace.visualstudio.com/items?itemName=hediet.vscode-drawio) extension;
 - a `.pdf` in a PDF viewer extension, such as [vscode-pdf](https://marketplace.visualstudio.com/items?itemName=tomoki1207.pdf);
+- the document's Markdown (`.md`) in the text editor, or in another Markdown editor extension you've installed: right-click the tab and choose **Reopen Editor With...**, or make it the default for `*.md` with the `workbench.editorAssociations` setting;
 - a `.json`, `.csv` or `.svg` in the text editor, and images in the image preview.
 
 The tab is titled with the file's name, and the breadcrumb shows the archive and the folders inside it. Saving writes that one file back into the archive and leaves everything else in it unchanged; an MDZip editor open on the same archive reloads to show the change.
