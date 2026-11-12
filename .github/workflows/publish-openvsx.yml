@@ -1,0 +1,48 @@
+# Publish a release's VSIX to Open VSX (https://open-vsx.org/extension/mdzip-project/mdzip-vscode).
+#
+# No token is stored: Open VSX trusts this workflow as a "trusted publisher"
+# (registered under https://open-vsx.org/user-settings/trusted-publishers for
+# the mdzip-project namespace, repository mdzip-project/mdzip-vscode, workflow
+# publish-openvsx.yml) and issues a short-lived publish token in exchange for
+# the workflow's OIDC ID token.
+#
+# It publishes the VSIX attached to the GitHub release, the same file that
+# goes to the VS Code Marketplace, rather than building a new one. Runs when a
+# release is published, or by hand for an existing tag (for example v1.7.2).
+# A version can never be published to Open VSX twice.
+
+name: Publish to Open VSX
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose VSIX to publish, for example v1.7.2
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the release's VSIX
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.vsix' --dir vsix
+          ls -l vsix
+          test "$(ls vsix/*.vsix | wc -l)" -eq 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Publish with trusted publishing
+        run: npx --yes ovsx@1.4.0 publish vsix/*.vsix --trusted-publishing
