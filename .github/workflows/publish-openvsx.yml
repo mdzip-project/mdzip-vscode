@@ -42,7 +42,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Publish with trusted publishing
         run: npx --yes ovsx@1.4.0 publish vsix/*.vsix --trusted-publishing
