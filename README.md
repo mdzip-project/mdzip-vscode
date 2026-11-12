@@ -114,7 +114,7 @@ The tab is titled with the file's name, and the breadcrumb shows the archive and
 
 If a Markdown image does not render in Preview, verify that the Markdown path exactly matches an image path inside the archive, including filename and extension. The renderer resolves archive-relative paths exactly.
 
-Images loaded from `https://` URLs are shown, as in VS Code's own Markdown preview; plain `http://` images are always blocked. To stop documents from contacting remote servers when they're opened, turn off the `mdzip.remoteImages` setting. The change applies to editors opened after it.
+Images loaded from `https://` URLs aren't shown by default, because loading one tells its server that the document was opened. To show them, as VS Code's own Markdown preview does, turn on the `mdzip.remoteImages` setting. The change applies to editors opened after it. Plain `http://` images are always blocked.
 
 ## Settings
 
@@ -123,7 +123,7 @@ Open **Settings** and search for `mdzip`, or add these to `settings.json`:
 | Setting | Default | What it does |
 |---|---|---|
 | `mdzip.previewWidth` | `"default"` | Width of the rendered page: `"narrow"`, `"default"`, `"wide"` (650 / 900 / 1200px at 100% zoom, scaling with zoom) or `"full"` (fills the preview pane). The page width button in the editor toolbar changes it, and every open editor follows. |
-| `mdzip.remoteImages` | `true` | Show images loaded from `https://` URLs in the editor and diff view. Turn off to stop documents from contacting remote servers when they're opened. Plain `http://` images are always blocked. Applies to editors opened after the change. |
+| `mdzip.remoteImages` | `false` | Show images loaded from `https://` URLs in the editor and diff view. Off by default, because loading a remote image tells its server that the document was opened. Plain `http://` images are always blocked. Applies to editors opened after the change. |
 | `mdzip.templates.path` | `""` | Primary folder containing MDZip templates. Relative paths beginning with `./` or `../` resolve from the first workspace folder. |
 | `mdzip.templates.additionalPaths` | `[]` | Additional template folders, resolved the same way. |
 
@@ -169,6 +169,7 @@ When VS Code prompts you to trust or start the bundled MDZip MCP server, approve
 - `upsert_canonical_document` - updates the manifest-first canonical Markdown document.
 - `mdz_write_entry` - adds or replaces any other file in the archive: another Markdown document, an image, a diagram, a data file. The content can be text, a file on disk, or base64. Replacing a file requires the `entryHash` from the agent's last read, so a change made since (in the editor, say) is never silently overwritten. Every other file is kept as it was.
 - `mdz_remove_entry` - removes a file, with the same `entryHash` check. The main document and `manifest.json` can't be removed.
+- `mdz_create_archive` - creates a new `.mdz` from a list of files (documents, images, diagrams, data) plus its title, mode and main document. The archive is checked before it's written, an existing file is only replaced when the agent asks to, and the standard `AGENTS.md` is added. Each file's `entryHash` comes back, ready for the next edit.
 - `mdz_list_entries` - lists archive entries; with `includeHashes`, also each entry's size and `entryHash`.
 - `mdz_search_text` - searches UTF-8 text entries inside an `.mdz` archive for grep/find-style requests.
 - `mdz_read_text` - reads a text entry such as `manifest.json` or `index.md`.

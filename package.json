@@ -2,7 +2,7 @@
   "name": "mdzip-vscode",
   "displayName": "MDZip Editor",
   "description": "Edit MDZip (.mdz) files in single document mode — Markdown plus its images in one portable file — with live preview. Also opens plain Markdown (.md) files in the same editor via Open With.",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "icon": "media/icons/mdzip-marketplace-icon.png",
   "publisher": "mdzip-project",
   "license": "Apache-2.0",
@@ -290,6 +290,95 @@
         }
       },
       {
+        "name": "mdzip_create_archive",
+        "displayName": "Create an MDZip File",
+        "modelDescription": "Create a new .mdz file: use this to start an MDZip document from scratch. Don't build an .mdz yourself with zip tools or a script (Python, PowerShell, zip); a hand-made archive can miss the manifest and other format rules, and nothing checks it. Pass every file in files (the Markdown documents plus any images, diagrams, stylesheets or data), with title, mode and entryPoint for the manifest. The archive is built in memory, validated, and written once; nothing is written if validation finds errors. Fails with ARCHIVE_EXISTS if archivePath is taken, unless overwrite is true. Adds the standard AGENTS.md unless includeAgentsGuide is false. Returns the entry point, each file's entryHash (pass it to mdzip_write_entry or mdzip_remove_entry to change that file later) and validation results, including images nothing references and references that don't resolve.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "mdzCreateArchive",
+        "icon": "$(file-zip)",
+        "tags": [
+          "mdzip",
+          "mdz"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "archivePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path of the new .mdz file. Missing parent folders are created."
+            },
+            "files": {
+              "type": "array",
+              "description": "Every file to put in the archive: at least one Markdown document, plus any images, diagrams (.svg, .drawio), stylesheets or data files. Give each file's content as exactly one of content, sourcePath or contentBase64. Don't include manifest.json; set title, mode and entryPoint instead.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Archive-relative path, for example index.md, chapters/02-setup.md or images/chart.png. Case-sensitive."
+                  },
+                  "content": {
+                    "type": "string",
+                    "description": "The file as UTF-8 text (Markdown, SVG, .drawio, CSS, JSON, CSV, ...). Markdown line endings are normalized to LF."
+                  },
+                  "sourcePath": {
+                    "type": "string",
+                    "description": "Absolute or workspace-relative path of a file on disk to copy in, for example an image you generated."
+                  },
+                  "contentBase64": {
+                    "type": "string",
+                    "description": "The file as base64, for binary content passed inline."
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            },
+            "title": {
+              "type": "string",
+              "description": "Document title for the manifest. Defaults to the main document's first # heading, then the file name."
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "document",
+                "project"
+              ],
+              "description": "\"document\" (default): one document, possibly split across several Markdown files (chapters, sections). \"project\": several separate documents that link to each other."
+            },
+            "entryPoint": {
+              "type": "string",
+              "description": "Path of the main Markdown document, which opens first. Optional when there is only one Markdown file or one is named index.md."
+            },
+            "description": {
+              "type": "string",
+              "description": "Optional one-sentence description for the manifest."
+            },
+            "author": {
+              "type": "string",
+              "description": "Optional author name for the manifest."
+            },
+            "language": {
+              "type": "string",
+              "description": "Optional language tag for the manifest, for example en or en-US."
+            },
+            "overwrite": {
+              "type": "boolean",
+              "description": "Replace archivePath if it already exists. Defaults to false. Only set it when the user asked to replace that file."
+            },
+            "includeAgentsGuide": {
+              "type": "boolean",
+              "description": "Add the standard AGENTS.md that tells AI tools without MDZip support how to read and edit the archive safely. Defaults to true. Ignored if files already has an AGENTS.md."
+            }
+          },
+          "required": [
+            "archivePath",
+            "files"
+          ]
+        }
+      },
+      {
         "name": "mdzip_write_entry",
         "displayName": "Add or Replace a File in an MDZip Archive",
         "modelDescription": "Add or replace any file inside an .mdz archive: another Markdown document, an image, a diagram (.svg, .drawio), a stylesheet, a data file, an AGENTS.md. Give the content as exactly one of content (UTF-8 text), sourcePath (a file on disk, for images or diagrams you just generated) or contentBase64 (other binary). Every other file in the archive is kept byte-for-byte. Replacing an existing file requires expectedEntryHash (from mdzip_read_text, mdzip_read_image or mdzip_list_entries with includeHashes) and fails with CONTENT_CONFLICT if the file changed since; omit it to add a new file, which fails with ENTRY_EXISTS if the path is taken. manifest.json can't be written here. Returns the changed paths, the new entry hash and post-write validation, including images that nothing references and references that don't resolve.",
@@ -557,8 +646,8 @@
         },
         "mdzip.remoteImages": {
           "type": "boolean",
-          "default": true,
-          "markdownDescription": "Show images loaded from `https://` URLs in the MDZip editor and diff view, as VS Code's Markdown preview does. Turn off to stop documents from contacting remote servers when they're opened. Plain `http://` images are always blocked. Applies to editors opened after the change."
+          "default": false,
+          "markdownDescription": "Show images loaded from `https://` URLs in the MDZip editor and diff view, as VS Code's Markdown preview does. Off by default, because loading a remote image tells its server that the document was opened. Plain `http://` images are always blocked. Applies to editors opened after the change."
         }
       }
     },
@@ -863,7 +952,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run bundle",
-    "package": "node -e \"require('fs').mkdirSync('build',{recursive:true})\" && npx --yes vsce package --out build/ --no-dependencies && node -e \"console.log('VSIX written to '+require('path').resolve('build'))\"",
+    "package": "node -e \"const fs=require('fs');fs.mkdirSync('build',{recursive:true});for(const f of fs.readdirSync('build'))if(f.endsWith('.vsix'))fs.rmSync('build/'+f)\" && npx --yes vsce package --out build/ --no-dependencies && node -e \"console.log('VSIX written to '+require('path').resolve('build'))\"",
     "bundle": "npm run bundle:extension && npm run bundle:webview && npm run bundle:worker && npm run bundle:diff-webview && npm run bundle:mcp",
     "bundle:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --alias:jsdom=./src/jsdomStub.js --format=cjs --platform=node --minify",
     "bundle:webview": "esbuild src/webviewEditor.ts --bundle --outfile=media/editor.bundle.js --format=iife --platform=browser --minify",
@@ -902,8 +991,8 @@
   },
   "dependencies": {
     "@codemirror/view": "^6.43.15",
-    "@mdzip/core-js": "^2.1.1",
-    "@mdzip/editor": "^2.4.0",
+    "@mdzip/core-js": "^2.2.1",
+    "@mdzip/editor": "^2.4.2",
     "@modelcontextprotocol/sdk": "^1.17.4",
     "jsdom": "^29.1.1",
     "marked": "^15.0.12",

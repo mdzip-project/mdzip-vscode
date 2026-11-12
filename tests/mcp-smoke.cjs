@@ -59,7 +59,9 @@ async function main() {
       await testWriteEntryGuards(client, fixtureRoot);
       await testWriteEntryKeepsImpliedEntryPoint(client, fixtures.fallbackSingleMarkdown);
       await testRemoveEntry(client, fixtureRoot);
-      console.log('MCP smoke tests passed: T1, T2, T4, T5, T6, T7, T8, T9, T10, T-img, T-write, T-write-guards, T-write-entrypoint, T-remove');
+      await testCreateArchive(client, fixtureRoot);
+      await testCreateArchiveGuards(client, fixtureRoot);
+      console.log('MCP smoke tests passed: T1, T2, T4, T5, T6, T7, T8, T9, T10, T-img, T-write, T-write-guards, T-write-entrypoint, T-remove, T-create, T-create-guards');
     } finally {
       await client.close();
     }
@@ -544,6 +546,113 @@ async function testWriteEntryGuards(client, fixtureRoot) {
   const review = parseFirstTextJson(await call(client, 'mdz_review_document', { archivePath }));
   const viaReviewHash = await call(client, 'mdz_write_entry', { archivePath, entryPath: 'index.md', content: '# Doc\n\nRewritten.\n', expectedEntryHash: review.canonicalContentHash });
   assert.ok(!viaReviewHash.isError, extractTextContent(viaReviewHash));
+}
+
+async function testCreateArchive(client, fixtureRoot) {
+  const { MdzArchiveCore } = await getMdzipCore();
+  const pngPath = path.join(fixtureRoot, 'generated.png');
+  await fs.writeFile(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  // A missing parent folder is created.
+  const archivePath = path.join(fixtureRoot, 'new', 'guide.mdz');
+
+  const result = await call(client, 'mdz_create_archive', {
+    archivePath,
+    mode: 'project',
+    entryPoint: 'index.md',
+    description: 'Made by the smoke test.',
+    files: [
+      { path: 'index.md', content: '# Field Guide\r\n\r\nSee [setup](chapters/setup.md).\r\n\r\n![Chart](images/chart.png)\r\n' },
+      { path: 'chapters/setup.md', content: '# Setup\n\nBack to [the start](../index.md).\n' },
+      { path: 'images/chart.png', sourcePath: pngPath },
+      { path: 'diagrams/flow.svg', content: '<svg xmlns="http://www.w3.org/2000/svg"/>' },
+    ],
+  });
+  assert.ok(!result.isError, extractTextContent(result));
+  const payload = parseFirstTextJson(result);
+  assert.equal(payload.entryPoint, 'index.md');
+  assert.equal(payload.title, 'Field Guide', 'title defaults to the main document\'s first heading');
+  assert.equal(payload.agentsGuide, 'added');
+  assert.equal(payload.replaced, false);
+  assert.equal(payload.postWriteValidation.isValid, true);
+  const byPath = Object.fromEntries(payload.files.map((f) => [f.path, f]));
+  for (const p of ['index.md', 'chapters/setup.md', 'images/chart.png', 'diagrams/flow.svg', 'AGENTS.md']) {
+    assert.ok(byPath[p]?.entryHash, `result should list ${p} with an entryHash`);
+  }
+
+  const archive = await MdzArchiveCore.open(await fs.readFile(archivePath));
+  const manifest = JSON.parse(await archive.readText('manifest.json'));
+  assert.equal(manifest.mode, 'project');
+  assert.equal(manifest.entryPoint, 'index.md');
+  assert.equal(manifest.title, 'Field Guide');
+  assert.equal(manifest.description, 'Made by the smoke test.');
+  assert.ok(manifest.spec?.version, 'manifest records the spec version');
+  assert.ok(!(await archive.readText('index.md')).includes('\r'), 'Markdown is normalized to LF');
+  assert.deepEqual([...(await archive.readBytes('images/chart.png'))], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  // The returned hashes work straight away for the next edit.
+  const edit = await call(client, 'mdz_write_entry', {
+    archivePath,
+    entryPath: 'chapters/setup.md',
+    content: '# Setup\n\nEdited.\n',
+    expectedEntryHash: byPath['chapters/setup.md'].entryHash,
+  });
+  assert.ok(!edit.isError, extractTextContent(edit));
+
+  // Single file, no entryPoint: it's the main document; title falls back to the file name.
+  const single = path.join(fixtureRoot, 'single-note.mdz');
+  const singleResult = parseFirstTextJson(await call(client, 'mdz_create_archive', {
+    archivePath: single,
+    includeAgentsGuide: false,
+    files: [{ path: 'note.md', content: 'No heading here.\n' }],
+  }));
+  assert.equal(singleResult.entryPoint, 'note.md');
+  assert.equal(singleResult.title, 'single-note');
+  assert.equal(singleResult.agentsGuide, 'skipped');
+  assert.equal(singleResult.files.length, 1);
+
+  // overwrite replaces the file.
+  const replaced = await call(client, 'mdz_create_archive', {
+    archivePath: single,
+    overwrite: true,
+    files: [{ path: 'index.md', content: '# Replaced\n' }],
+  });
+  assert.ok(!replaced.isError, extractTextContent(replaced));
+  assert.equal(parseFirstTextJson(replaced).replaced, true);
+}
+
+async function testCreateArchiveGuards(client, fixtureRoot) {
+  const existing = await freshArchive(fixtureRoot, 'create-guards.mdz');
+  const before = await fs.readFile(existing);
+  const code = async (args) => {
+    const result = await call(client, 'mdz_create_archive', args);
+    assert.equal(result.isError, true, `expected an error for ${JSON.stringify(args)}`);
+    const payload = parseErrorPayload(result);
+    assertHasStandardErrorShape(payload);
+    return payload.code;
+  };
+  const target = path.join(fixtureRoot, 'never-written.mdz');
+  const doc = { path: 'index.md', content: '# Doc\n' };
+
+  assert.equal(await code({ archivePath: existing, files: [doc] }), 'ARCHIVE_EXISTS');
+  assert.deepEqual(await fs.readFile(existing), before, 'an existing archive is left untouched');
+  assert.equal(await code({ archivePath: path.join(fixtureRoot, 'x.zip'), files: [doc] }), 'INVALID_ARCHIVE_PATH');
+  assert.equal(await code({ archivePath: target, files: [] }), 'MISSING_FILES');
+  assert.equal(await code({ archivePath: target, files: [{ path: 'data.json', content: '{}' }] }), 'NO_MARKDOWN_ENTRIES');
+  assert.equal(await code({ archivePath: target, files: [doc, { path: 'manifest.json', content: '{}' }] }), 'MANIFEST_NOT_WRITABLE');
+  assert.equal(await code({ archivePath: target, files: [doc, { path: 'Index.md', content: 'x' }] }), 'DUPLICATE_ENTRY_PATH');
+  assert.equal(await code({ archivePath: target, files: [doc, { path: '../out.md', content: 'x' }] }), 'INVALID_ENTRY_PATH');
+  assert.equal(await code({ archivePath: target, files: [{ path: 'a.md', content: 'a' }, { path: 'b.md', content: 'b' }] }), 'ENTRY_POINT_REQUIRED');
+  assert.equal(await code({ archivePath: target, entryPoint: 'missing.md', files: [doc] }), 'ENTRY_POINT_NOT_FOUND');
+  assert.equal(await code({ archivePath: target, mode: 'book', files: [doc] }), 'INVALID_MODE');
+  assert.equal(await code({ archivePath: target, files: [{ path: 'index.md' }] }), 'MISSING_CONTENT');
+  await assert.rejects(fs.access(target), 'nothing is written when the call fails');
+
+  // Tools that need an existing archive point to mdz_create_archive when there isn't one.
+  const missing = await call(client, 'mdz_write_entry', { archivePath: target, entryPath: 'index.md', content: '# x\n' });
+  assert.equal(missing.isError, true);
+  const payload = parseErrorPayload(missing);
+  assert.equal(payload.code, 'ARCHIVE_NOT_FOUND');
+  assert.match(payload.nextAction, /mdz_create_archive/);
 }
 
 async function testWriteEntryKeepsImpliedEntryPoint(client, archivePath) {

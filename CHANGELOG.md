@@ -1,10 +1,17 @@
 # Change Log
 
-## [1.7.1] - Unreleased
+## [1.7.2] - 2026-11-11
+
+### Added
+- **AI agents can create a new `.mdz`** (#17). Before, every MDZip tool needed an archive that already existed, so an agent asked to make one zipped it by hand with a script, and nothing checked the result. The new `mdz_create_archive` tool, in the MCP server and in VS Code chat, takes every file (documents, images, diagrams, data) plus the title, mode and main document. It builds the archive, checks it, and writes it once. Nothing is written if the check finds errors, and an existing file is never replaced unless the agent asks to (in VS Code chat you confirm first). It adds the standard `AGENTS.md` and returns each file's hash, so the agent can edit the new archive straight away.
+- When a tool is given an `.mdz` that doesn't exist, its error now points the agent to `mdz_create_archive`. The workspace agent instructions say how to start a new `.mdz` too.
+
+### Changed
+- **Remote images are now off by default.** `mdzip.remoteImages` defaults to `false`, so opening an `.mdz` doesn't contact any server unless you turn it on. Loading a remote image tells its server that the document was opened, which matters most for archives you receive from someone else. Turn the setting on to show `https://` images again; plain `http://` images are always blocked.
 
 ### Fixed
 - When an `.mdz` file changes on disk while it's open (for example, an AI agent edits it) and the editor reloads it, you now stay where you were: on the same file, scrolled to the same place in the preview and the source, with the contents pane still open. Text added above where you're reading doesn't move you. Before, the editor jumped back to the top of the main document and, if you had changed the layout, closed the contents pane.
-- Images used by a second document in an `.mdz` are no longer reported as unused. The checks looked only at the main document, so the contents pane marked those images as unused (and offered to delete them), and after an AI agent wrote a file the MCP server could tell it to delete images that were in use. Every document is checked now. The contents pane part needs MDZip editor 2.4.1.
+- Images used by a second document in an `.mdz` are no longer reported as unused. The checks looked only at the main document, so the contents pane marked those images as unused (and offered to delete them), and after an AI agent wrote a file the MCP server could tell it to delete images that were in use. Every document is checked now. Updated to MDZip editor 2.4.2 and core-js 2.2.1 for this.
 
 ## [1.7.0] - 2026-10-22
 

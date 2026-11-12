@@ -181,7 +181,7 @@ function buildDiffHtml(
   );
   const nonce = getNonce();
   // Same remote-image rule as the editor (mdzip.remoteImages).
-  const remoteImages = vscode.workspace.getConfiguration('mdzip').get<boolean>('remoteImages', true) ? ' https:' : '';
+  const remoteImages = vscode.workspace.getConfiguration('mdzip').get<boolean>('remoteImages', false) ? ' https:' : '';
 
   return /* html */ `<!DOCTYPE html>
 <html lang="en">

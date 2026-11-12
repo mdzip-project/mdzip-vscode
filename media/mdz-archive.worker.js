@@ -233,9 +233,9 @@ function binstring2buf(str) {
   }
   return buf;
 }
-function buf2string(buf, max) {
+function buf2string(buf, max2) {
   var i, out, c, c_len;
-  var len = max || buf.length;
+  var len = max2 || buf.length;
   var utf16buf = new Array(len * 2);
   for (out = 0, i = 0; i < len; ) {
     c = buf[i++];
@@ -268,23 +268,23 @@ function buf2string(buf, max) {
   }
   return _buf2binstring(utf16buf, out);
 }
-function utf8border(buf, max) {
+function utf8border(buf, max2) {
   var pos;
-  max = max || buf.length;
-  if (max > buf.length) {
-    max = buf.length;
+  max2 = max2 || buf.length;
+  if (max2 > buf.length) {
+    max2 = buf.length;
   }
-  pos = max - 1;
+  pos = max2 - 1;
   while (pos >= 0 && (buf[pos] & 192) === 128) {
     pos--;
   }
   if (pos < 0) {
-    return max;
+    return max2;
   }
   if (pos === 0) {
-    return max;
+    return max2;
   }
-  return pos + utf8len(buf[pos]) > max ? pos : max;
+  return pos + utf8len(buf[pos]) > max2 ? pos : max2;
 }
 function adler32(adler, buf, len, pos) {
   var s1 = adler & 65535 | 0, s2 = adler >>> 16 & 65535 | 0, n = 0;
@@ -341,7 +341,7 @@ function inflate_fast(strm, start) {
   var wnext;
   var s_window;
   var hold;
-  var bits;
+  var bits2;
   var lcode;
   var dcode;
   var lmask;
@@ -367,25 +367,25 @@ function inflate_fast(strm, start) {
   wnext = state.wnext;
   s_window = state.window;
   hold = state.hold;
-  bits = state.bits;
+  bits2 = state.bits;
   lcode = state.lencode;
   dcode = state.distcode;
   lmask = (1 << state.lenbits) - 1;
   dmask = (1 << state.distbits) - 1;
   top:
     do {
-      if (bits < 15) {
-        hold += input[_in++] << bits;
-        bits += 8;
-        hold += input[_in++] << bits;
-        bits += 8;
+      if (bits2 < 15) {
+        hold += input[_in++] << bits2;
+        bits2 += 8;
+        hold += input[_in++] << bits2;
+        bits2 += 8;
       }
       here = lcode[hold & lmask];
       dolen:
         for (; ; ) {
           op = here >>> 24;
           hold >>>= op;
-          bits -= op;
+          bits2 -= op;
           op = here >>> 16 & 255;
           if (op === 0) {
             output[_out++] = here & 65535;
@@ -393,36 +393,36 @@ function inflate_fast(strm, start) {
             len = here & 65535;
             op &= 15;
             if (op) {
-              if (bits < op) {
-                hold += input[_in++] << bits;
-                bits += 8;
+              if (bits2 < op) {
+                hold += input[_in++] << bits2;
+                bits2 += 8;
               }
               len += hold & (1 << op) - 1;
               hold >>>= op;
-              bits -= op;
+              bits2 -= op;
             }
-            if (bits < 15) {
-              hold += input[_in++] << bits;
-              bits += 8;
-              hold += input[_in++] << bits;
-              bits += 8;
+            if (bits2 < 15) {
+              hold += input[_in++] << bits2;
+              bits2 += 8;
+              hold += input[_in++] << bits2;
+              bits2 += 8;
             }
             here = dcode[hold & dmask];
             dodist:
               for (; ; ) {
                 op = here >>> 24;
                 hold >>>= op;
-                bits -= op;
+                bits2 -= op;
                 op = here >>> 16 & 255;
                 if (op & 16) {
                   dist = here & 65535;
                   op &= 15;
-                  if (bits < op) {
-                    hold += input[_in++] << bits;
-                    bits += 8;
-                    if (bits < op) {
-                      hold += input[_in++] << bits;
-                      bits += 8;
+                  if (bits2 < op) {
+                    hold += input[_in++] << bits2;
+                    bits2 += 8;
+                    if (bits2 < op) {
+                      hold += input[_in++] << bits2;
+                      bits2 += 8;
                     }
                   }
                   dist += hold & (1 << op) - 1;
@@ -432,7 +432,7 @@ function inflate_fast(strm, start) {
                     break top;
                   }
                   hold >>>= op;
-                  bits -= op;
+                  bits2 -= op;
                   op = _out - beg;
                   if (dist > op) {
                     op = dist - op;
@@ -536,16 +536,16 @@ function inflate_fast(strm, start) {
           break;
         }
     } while (_in < last && _out < end2);
-  len = bits >> 3;
+  len = bits2 >> 3;
   _in -= len;
-  bits -= len << 3;
-  hold &= (1 << bits) - 1;
+  bits2 -= len << 3;
+  hold &= (1 << bits2) - 1;
   strm.next_in = _in;
   strm.next_out = _out;
   strm.avail_in = _in < last ? 5 + (last - _in) : 5 - (_in - last);
   strm.avail_out = _out < end2 ? 257 + (end2 - _out) : 257 - (_out - end2);
   state.hold = hold;
-  state.bits = bits;
+  state.bits = bits2;
   return;
 }
 var MAXBITS = 15;
@@ -693,10 +693,10 @@ var dext = [
   64
 ];
 function inflate_table(type, lens, lens_index, codes, table, table_index, work, opts) {
-  var bits = opts.bits;
+  var bits2 = opts.bits;
   var len = 0;
   var sym = 0;
-  var min = 0, max = 0;
+  var min = 0, max2 = 0;
   var root = 0;
   var curr = 0;
   var drop = 0;
@@ -722,22 +722,22 @@ function inflate_table(type, lens, lens_index, codes, table, table_index, work, 
   for (sym = 0; sym < codes; sym++) {
     count[lens[lens_index + sym]]++;
   }
-  root = bits;
-  for (max = MAXBITS; max >= 1; max--) {
-    if (count[max] !== 0) {
+  root = bits2;
+  for (max2 = MAXBITS; max2 >= 1; max2--) {
+    if (count[max2] !== 0) {
       break;
     }
   }
-  if (root > max) {
-    root = max;
+  if (root > max2) {
+    root = max2;
   }
-  if (max === 0) {
+  if (max2 === 0) {
     table[table_index++] = 1 << 24 | 64 << 16 | 0;
     table[table_index++] = 1 << 24 | 64 << 16 | 0;
     opts.bits = 1;
     return 0;
   }
-  for (min = 1; min < max; min++) {
+  for (min = 1; min < max2; min++) {
     if (count[min] !== 0) {
       break;
     }
@@ -753,7 +753,7 @@ function inflate_table(type, lens, lens_index, codes, table, table_index, work, 
       return -1;
     }
   }
-  if (left > 0 && (type === CODES || max !== 1)) {
+  if (left > 0 && (type === CODES || max2 !== 1)) {
     return -1;
   }
   offs[1] = 0;
@@ -822,7 +822,7 @@ function inflate_table(type, lens, lens_index, codes, table, table_index, work, 
     }
     sym++;
     if (--count[len] === 0) {
-      if (len === max) {
+      if (len === max2) {
         break;
       }
       len = lens[lens_index + work[sym]];
@@ -834,7 +834,7 @@ function inflate_table(type, lens, lens_index, codes, table, table_index, work, 
       next += min;
       curr = len - drop;
       left = 1 << curr;
-      while (curr + drop < max) {
+      while (curr + drop < max2) {
         left -= count[curr + drop];
         if (left <= 0) {
           break;
@@ -1097,7 +1097,7 @@ function inflate(strm, flush2) {
   var put;
   var have, left;
   var hold;
-  var bits;
+  var bits2;
   var _in, _out;
   var copy;
   var from;
@@ -1128,7 +1128,7 @@ function inflate(strm, flush2) {
   input = strm.input;
   have = strm.avail_in;
   hold = state.hold;
-  bits = state.bits;
+  bits2 = state.bits;
   _in = have;
   _out = left;
   ret = Z_OK$1;
@@ -1140,13 +1140,13 @@ function inflate(strm, flush2) {
             state.mode = TYPEDO;
             break;
           }
-          while (bits < 16) {
+          while (bits2 < 16) {
             if (have === 0) {
               break inf_leave;
             }
             have--;
-            hold += input[next++] << bits;
-            bits += 8;
+            hold += input[next++] << bits2;
+            bits2 += 8;
           }
           if (state.wrap & 2 && hold === 35615) {
             state.check = 0;
@@ -1154,7 +1154,7 @@ function inflate(strm, flush2) {
             hbuf[1] = hold >>> 8 & 255;
             state.check = crc32(state.check, hbuf, 2, 0);
             hold = 0;
-            bits = 0;
+            bits2 = 0;
             state.mode = FLAGS;
             break;
           }
@@ -1174,7 +1174,7 @@ function inflate(strm, flush2) {
             break;
           }
           hold >>>= 4;
-          bits -= 4;
+          bits2 -= 4;
           len = (hold & 15) + 8;
           if (state.wbits === 0) {
             state.wbits = len;
@@ -1187,16 +1187,16 @@ function inflate(strm, flush2) {
           strm.adler = state.check = 1;
           state.mode = hold & 512 ? DICTID : TYPE$1;
           hold = 0;
-          bits = 0;
+          bits2 = 0;
           break;
         case FLAGS:
-          while (bits < 16) {
+          while (bits2 < 16) {
             if (have === 0) {
               break inf_leave;
             }
             have--;
-            hold += input[next++] << bits;
-            bits += 8;
+            hold += input[next++] << bits2;
+            bits2 += 8;
           }
           state.flags = hold;
           if ((state.flags & 255) !== Z_DEFLATED$1) {
@@ -1218,17 +1218,17 @@ function inflate(strm, flush2) {
             state.check = crc32(state.check, hbuf, 2, 0);
           }
           hold = 0;
-          bits = 0;
+          bits2 = 0;
           state.mode = TIME;
         /* falls through */
         case TIME:
-          while (bits < 32) {
+          while (bits2 < 32) {
             if (have === 0) {
               break inf_leave;
             }
             have--;
-            hold += input[next++] << bits;
-            bits += 8;
+            hold += input[next++] << bits2;
+            bits2 += 8;
           }
           if (state.head) {
             state.head.time = hold;
@@ -1241,17 +1241,17 @@ function inflate(strm, flush2) {
             state.check = crc32(state.check, hbuf, 4, 0);
           }
           hold = 0;
-          bits = 0;
+          bits2 = 0;
           state.mode = OS;
         /* falls through */
         case OS:
-          while (bits < 16) {
+          while (bits2 < 16) {
             if (have === 0) {
               break inf_leave;
             }
             have--;
-            hold += input[next++] << bits;
-            bits += 8;
+            hold += input[next++] << bits2;
+            bits2 += 8;
           }
           if (state.head) {
             state.head.xflags = hold & 255;
@@ -1263,18 +1263,18 @@ function inflate(strm, flush2) {
             state.check = crc32(state.check, hbuf, 2, 0);
           }
           hold = 0;
-          bits = 0;
+          bits2 = 0;
           state.mode = EXLEN;
         /* falls through */
         case EXLEN:
           if (state.flags & 1024) {
-            while (bits < 16) {
+            while (bits2 < 16) {
               if (have === 0) {
                 break inf_leave;
               }
               have--;
-              hold += input[next++] << bits;
-              bits += 8;
+              hold += input[next++] << bits2;
+              bits2 += 8;
             }
             state.length = hold;
             if (state.head) {
@@ -1286,7 +1286,7 @@ function inflate(strm, flush2) {
               state.check = crc32(state.check, hbuf, 2, 0);
             }
             hold = 0;
-            bits = 0;
+            bits2 = 0;
           } else if (state.head) {
             state.head.extra = null;
           }
@@ -1382,13 +1382,13 @@ function inflate(strm, flush2) {
         /* falls through */
         case HCRC:
           if (state.flags & 512) {
-            while (bits < 16) {
+            while (bits2 < 16) {
               if (have === 0) {
                 break inf_leave;
               }
               have--;
-              hold += input[next++] << bits;
-              bits += 8;
+              hold += input[next++] << bits2;
+              bits2 += 8;
             }
             if (hold !== (state.check & 65535)) {
               strm.msg = "header crc mismatch";
@@ -1396,7 +1396,7 @@ function inflate(strm, flush2) {
               break;
             }
             hold = 0;
-            bits = 0;
+            bits2 = 0;
           }
           if (state.head) {
             state.head.hcrc = state.flags >> 9 & 1;
@@ -1406,17 +1406,17 @@ function inflate(strm, flush2) {
           state.mode = TYPE$1;
           break;
         case DICTID:
-          while (bits < 32) {
+          while (bits2 < 32) {
             if (have === 0) {
               break inf_leave;
             }
             have--;
-            hold += input[next++] << bits;
-            bits += 8;
+            hold += input[next++] << bits2;
+            bits2 += 8;
           }
           strm.adler = state.check = zswap32(hold);
           hold = 0;
-          bits = 0;
+          bits2 = 0;
           state.mode = DICT;
         /* falls through */
         case DICT:
@@ -1426,7 +1426,7 @@ function inflate(strm, flush2) {
             strm.next_in = next;
             strm.avail_in = have;
             state.hold = hold;
-            state.bits = bits;
+            state.bits = bits2;
             return Z_NEED_DICT$1;
           }
           strm.adler = state.check = 1;
@@ -1439,22 +1439,22 @@ function inflate(strm, flush2) {
         /* falls through */
         case TYPEDO:
           if (state.last) {
-            hold >>>= bits & 7;
-            bits -= bits & 7;
+            hold >>>= bits2 & 7;
+            bits2 -= bits2 & 7;
             state.mode = CHECK;
             break;
           }
-          while (bits < 3) {
+          while (bits2 < 3) {
             if (have === 0) {
               break inf_leave;
             }
             have--;
-            hold += input[next++] << bits;
-            bits += 8;
+            hold += input[next++] << bits2;
+            bits2 += 8;
           }
           state.last = hold & 1;
           hold >>>= 1;
-          bits -= 1;
+          bits2 -= 1;
           switch (hold & 3) {
             case 0:
               state.mode = STORED;
@@ -1464,7 +1464,7 @@ function inflate(strm, flush2) {
               state.mode = LEN_;
               if (flush2 === Z_TREES$1) {
                 hold >>>= 2;
-                bits -= 2;
+                bits2 -= 2;
                 break inf_leave;
               }
               break;
@@ -1476,18 +1476,18 @@ function inflate(strm, flush2) {
               state.mode = BAD$1;
           }
           hold >>>= 2;
-          bits -= 2;
+          bits2 -= 2;
           break;
         case STORED:
-          hold >>>= bits & 7;
-          bits -= bits & 7;
-          while (bits < 32) {
+          hold >>>= bits2 & 7;
+          bits2 -= bits2 & 7;
+          while (bits2 < 32) {
             if (have === 0) {
               break inf_leave;
             }
             have--;
-            hold += input[next++] << bits;
-            bits += 8;
+            hold += input[next++] << bits2;
+            bits2 += 8;
           }
           if ((hold & 65535) !== (hold >>> 16 ^ 65535)) {
             strm.msg = "invalid stored block lengths";
@@ -1496,7 +1496,7 @@ function inflate(strm, flush2) {
           }
           state.length = hold & 65535;
           hold = 0;
-          bits = 0;
+          bits2 = 0;
           state.mode = COPY_;
           if (flush2 === Z_TREES$1) {
             break inf_leave;
@@ -1528,23 +1528,23 @@ function inflate(strm, flush2) {
           state.mode = TYPE$1;
           break;
         case TABLE:
-          while (bits < 14) {
+          while (bits2 < 14) {
             if (have === 0) {
               break inf_leave;
             }
             have--;
-            hold += input[next++] << bits;
-            bits += 8;
+            hold += input[next++] << bits2;
+            bits2 += 8;
           }
           state.nlen = (hold & 31) + 257;
           hold >>>= 5;
-          bits -= 5;
+          bits2 -= 5;
           state.ndist = (hold & 31) + 1;
           hold >>>= 5;
-          bits -= 5;
+          bits2 -= 5;
           state.ncode = (hold & 15) + 4;
           hold >>>= 4;
-          bits -= 4;
+          bits2 -= 4;
           if (state.nlen > 286 || state.ndist > 30) {
             strm.msg = "too many length or distance symbols";
             state.mode = BAD$1;
@@ -1555,17 +1555,17 @@ function inflate(strm, flush2) {
         /* falls through */
         case LENLENS:
           while (state.have < state.ncode) {
-            while (bits < 3) {
+            while (bits2 < 3) {
               if (have === 0) {
                 break inf_leave;
               }
               have--;
-              hold += input[next++] << bits;
-              bits += 8;
+              hold += input[next++] << bits2;
+              bits2 += 8;
             }
             state.lens[order[state.have++]] = hold & 7;
             hold >>>= 3;
-            bits -= 3;
+            bits2 -= 3;
           }
           while (state.have < 19) {
             state.lens[order[state.have++]] = 0;
@@ -1590,33 +1590,33 @@ function inflate(strm, flush2) {
               here_bits = here >>> 24;
               here_op = here >>> 16 & 255;
               here_val = here & 65535;
-              if (here_bits <= bits) {
+              if (here_bits <= bits2) {
                 break;
               }
               if (have === 0) {
                 break inf_leave;
               }
               have--;
-              hold += input[next++] << bits;
-              bits += 8;
+              hold += input[next++] << bits2;
+              bits2 += 8;
             }
             if (here_val < 16) {
               hold >>>= here_bits;
-              bits -= here_bits;
+              bits2 -= here_bits;
               state.lens[state.have++] = here_val;
             } else {
               if (here_val === 16) {
                 n = here_bits + 2;
-                while (bits < n) {
+                while (bits2 < n) {
                   if (have === 0) {
                     break inf_leave;
                   }
                   have--;
-                  hold += input[next++] << bits;
-                  bits += 8;
+                  hold += input[next++] << bits2;
+                  bits2 += 8;
                 }
                 hold >>>= here_bits;
-                bits -= here_bits;
+                bits2 -= here_bits;
                 if (state.have === 0) {
                   strm.msg = "invalid bit length repeat";
                   state.mode = BAD$1;
@@ -1625,39 +1625,39 @@ function inflate(strm, flush2) {
                 len = state.lens[state.have - 1];
                 copy = 3 + (hold & 3);
                 hold >>>= 2;
-                bits -= 2;
+                bits2 -= 2;
               } else if (here_val === 17) {
                 n = here_bits + 3;
-                while (bits < n) {
+                while (bits2 < n) {
                   if (have === 0) {
                     break inf_leave;
                   }
                   have--;
-                  hold += input[next++] << bits;
-                  bits += 8;
+                  hold += input[next++] << bits2;
+                  bits2 += 8;
                 }
                 hold >>>= here_bits;
-                bits -= here_bits;
+                bits2 -= here_bits;
                 len = 0;
                 copy = 3 + (hold & 7);
                 hold >>>= 3;
-                bits -= 3;
+                bits2 -= 3;
               } else {
                 n = here_bits + 7;
-                while (bits < n) {
+                while (bits2 < n) {
                   if (have === 0) {
                     break inf_leave;
                   }
                   have--;
-                  hold += input[next++] << bits;
-                  bits += 8;
+                  hold += input[next++] << bits2;
+                  bits2 += 8;
                 }
                 hold >>>= here_bits;
-                bits -= here_bits;
+                bits2 -= here_bits;
                 len = 0;
                 copy = 11 + (hold & 127);
                 hold >>>= 7;
-                bits -= 7;
+                bits2 -= 7;
               }
               if (state.have + copy > state.nlen + state.ndist) {
                 strm.msg = "invalid bit length repeat";
@@ -1711,7 +1711,7 @@ function inflate(strm, flush2) {
             strm.next_in = next;
             strm.avail_in = have;
             state.hold = hold;
-            state.bits = bits;
+            state.bits = bits2;
             inflate_fast(strm, _out);
             put = strm.next_out;
             output = strm.output;
@@ -1720,7 +1720,7 @@ function inflate(strm, flush2) {
             input = strm.input;
             have = strm.avail_in;
             hold = state.hold;
-            bits = state.bits;
+            bits2 = state.bits;
             if (state.mode === TYPE$1) {
               state.back = -1;
             }
@@ -1732,15 +1732,15 @@ function inflate(strm, flush2) {
             here_bits = here >>> 24;
             here_op = here >>> 16 & 255;
             here_val = here & 65535;
-            if (here_bits <= bits) {
+            if (here_bits <= bits2) {
               break;
             }
             if (have === 0) {
               break inf_leave;
             }
             have--;
-            hold += input[next++] << bits;
-            bits += 8;
+            hold += input[next++] << bits2;
+            bits2 += 8;
           }
           if (here_op && (here_op & 240) === 0) {
             last_bits = here_bits;
@@ -1751,22 +1751,22 @@ function inflate(strm, flush2) {
               here_bits = here >>> 24;
               here_op = here >>> 16 & 255;
               here_val = here & 65535;
-              if (last_bits + here_bits <= bits) {
+              if (last_bits + here_bits <= bits2) {
                 break;
               }
               if (have === 0) {
                 break inf_leave;
               }
               have--;
-              hold += input[next++] << bits;
-              bits += 8;
+              hold += input[next++] << bits2;
+              bits2 += 8;
             }
             hold >>>= last_bits;
-            bits -= last_bits;
+            bits2 -= last_bits;
             state.back += last_bits;
           }
           hold >>>= here_bits;
-          bits -= here_bits;
+          bits2 -= here_bits;
           state.back += here_bits;
           state.length = here_val;
           if (here_op === 0) {
@@ -1789,17 +1789,17 @@ function inflate(strm, flush2) {
         case LENEXT:
           if (state.extra) {
             n = state.extra;
-            while (bits < n) {
+            while (bits2 < n) {
               if (have === 0) {
                 break inf_leave;
               }
               have--;
-              hold += input[next++] << bits;
-              bits += 8;
+              hold += input[next++] << bits2;
+              bits2 += 8;
             }
             state.length += hold & (1 << state.extra) - 1;
             hold >>>= state.extra;
-            bits -= state.extra;
+            bits2 -= state.extra;
             state.back += state.extra;
           }
           state.was = state.length;
@@ -1811,15 +1811,15 @@ function inflate(strm, flush2) {
             here_bits = here >>> 24;
             here_op = here >>> 16 & 255;
             here_val = here & 65535;
-            if (here_bits <= bits) {
+            if (here_bits <= bits2) {
               break;
             }
             if (have === 0) {
               break inf_leave;
             }
             have--;
-            hold += input[next++] << bits;
-            bits += 8;
+            hold += input[next++] << bits2;
+            bits2 += 8;
           }
           if ((here_op & 240) === 0) {
             last_bits = here_bits;
@@ -1830,22 +1830,22 @@ function inflate(strm, flush2) {
               here_bits = here >>> 24;
               here_op = here >>> 16 & 255;
               here_val = here & 65535;
-              if (last_bits + here_bits <= bits) {
+              if (last_bits + here_bits <= bits2) {
                 break;
               }
               if (have === 0) {
                 break inf_leave;
               }
               have--;
-              hold += input[next++] << bits;
-              bits += 8;
+              hold += input[next++] << bits2;
+              bits2 += 8;
             }
             hold >>>= last_bits;
-            bits -= last_bits;
+            bits2 -= last_bits;
             state.back += last_bits;
           }
           hold >>>= here_bits;
-          bits -= here_bits;
+          bits2 -= here_bits;
           state.back += here_bits;
           if (here_op & 64) {
             strm.msg = "invalid distance code";
@@ -1859,17 +1859,17 @@ function inflate(strm, flush2) {
         case DISTEXT:
           if (state.extra) {
             n = state.extra;
-            while (bits < n) {
+            while (bits2 < n) {
               if (have === 0) {
                 break inf_leave;
               }
               have--;
-              hold += input[next++] << bits;
-              bits += 8;
+              hold += input[next++] << bits2;
+              bits2 += 8;
             }
             state.offset += hold & (1 << state.extra) - 1;
             hold >>>= state.extra;
-            bits -= state.extra;
+            bits2 -= state.extra;
             state.back += state.extra;
           }
           if (state.offset > state.dmax) {
@@ -1930,13 +1930,13 @@ function inflate(strm, flush2) {
           break;
         case CHECK:
           if (state.wrap) {
-            while (bits < 32) {
+            while (bits2 < 32) {
               if (have === 0) {
                 break inf_leave;
               }
               have--;
-              hold |= input[next++] << bits;
-              bits += 8;
+              hold |= input[next++] << bits2;
+              bits2 += 8;
             }
             _out -= left;
             strm.total_out += _out;
@@ -1952,19 +1952,19 @@ function inflate(strm, flush2) {
               break;
             }
             hold = 0;
-            bits = 0;
+            bits2 = 0;
           }
           state.mode = LENGTH;
         /* falls through */
         case LENGTH:
           if (state.wrap && state.flags) {
-            while (bits < 32) {
+            while (bits2 < 32) {
               if (have === 0) {
                 break inf_leave;
               }
               have--;
-              hold += input[next++] << bits;
-              bits += 8;
+              hold += input[next++] << bits2;
+              bits2 += 8;
             }
             if (hold !== (state.total & 4294967295)) {
               strm.msg = "incorrect length check";
@@ -1972,7 +1972,7 @@ function inflate(strm, flush2) {
               break;
             }
             hold = 0;
-            bits = 0;
+            bits2 = 0;
           }
           state.mode = DONE;
         /* falls through */
@@ -1995,7 +1995,7 @@ function inflate(strm, flush2) {
   strm.next_in = next;
   strm.avail_in = have;
   state.hold = hold;
-  state.bits = bits;
+  state.bits = bits2;
   if (state.wsize || _out !== strm.avail_out && state.mode < BAD$1 && (state.mode < CHECK || flush2 !== Z_FINISH$1)) {
     if (updatewindow(strm, strm.output, strm.next_out, _out - strm.avail_out)) ;
   }
@@ -2380,32 +2380,32 @@ function gen_bitlen(s, desc) {
   var max_length = desc.stat_desc.max_length;
   var h;
   var n, m;
-  var bits;
+  var bits2;
   var xbits;
   var f;
   var overflow = 0;
-  for (bits = 0; bits <= MAX_BITS; bits++) {
-    s.bl_count[bits] = 0;
+  for (bits2 = 0; bits2 <= MAX_BITS; bits2++) {
+    s.bl_count[bits2] = 0;
   }
   tree[s.heap[s.heap_max] * 2 + 1] = 0;
   for (h = s.heap_max + 1; h < HEAP_SIZE; h++) {
     n = s.heap[h];
-    bits = tree[tree[n * 2 + 1] * 2 + 1] + 1;
-    if (bits > max_length) {
-      bits = max_length;
+    bits2 = tree[tree[n * 2 + 1] * 2 + 1] + 1;
+    if (bits2 > max_length) {
+      bits2 = max_length;
       overflow++;
     }
-    tree[n * 2 + 1] = bits;
+    tree[n * 2 + 1] = bits2;
     if (n > max_code) {
       continue;
     }
-    s.bl_count[bits]++;
+    s.bl_count[bits2]++;
     xbits = 0;
     if (n >= base) {
       xbits = extra[n - base];
     }
     f = tree[n * 2];
-    s.opt_len += f * (bits + xbits);
+    s.opt_len += f * (bits2 + xbits);
     if (has_stree) {
       s.static_len += f * (stree[n * 2 + 1] + xbits);
     }
@@ -2414,25 +2414,25 @@ function gen_bitlen(s, desc) {
     return;
   }
   do {
-    bits = max_length - 1;
-    while (s.bl_count[bits] === 0) {
-      bits--;
+    bits2 = max_length - 1;
+    while (s.bl_count[bits2] === 0) {
+      bits2--;
     }
-    s.bl_count[bits]--;
-    s.bl_count[bits + 1] += 2;
+    s.bl_count[bits2]--;
+    s.bl_count[bits2 + 1] += 2;
     s.bl_count[max_length]--;
     overflow -= 2;
   } while (overflow > 0);
-  for (bits = max_length; bits !== 0; bits--) {
-    n = s.bl_count[bits];
+  for (bits2 = max_length; bits2 !== 0; bits2--) {
+    n = s.bl_count[bits2];
     while (n !== 0) {
       m = s.heap[--h];
       if (m > max_code) {
         continue;
       }
-      if (tree[m * 2 + 1] !== bits) {
-        s.opt_len += (bits - tree[m * 2 + 1]) * tree[m * 2];
-        tree[m * 2 + 1] = bits;
+      if (tree[m * 2 + 1] !== bits2) {
+        s.opt_len += (bits2 - tree[m * 2 + 1]) * tree[m * 2];
+        tree[m * 2 + 1] = bits2;
       }
       n--;
     }
@@ -2441,10 +2441,10 @@ function gen_bitlen(s, desc) {
 function gen_codes(tree, max_code, bl_count) {
   var next_code = new Array(MAX_BITS + 1);
   var code = 0;
-  var bits;
+  var bits2;
   var n;
-  for (bits = 1; bits <= MAX_BITS; bits++) {
-    next_code[bits] = code = code + bl_count[bits - 1] << 1;
+  for (bits2 = 1; bits2 <= MAX_BITS; bits2++) {
+    next_code[bits2] = code = code + bl_count[bits2 - 1] << 1;
   }
   for (n = 0; n <= max_code; n++) {
     var len = tree[n * 2 + 1];
@@ -2456,7 +2456,7 @@ function gen_codes(tree, max_code, bl_count) {
 }
 function tr_static_init() {
   var n;
-  var bits;
+  var bits2;
   var length;
   var code;
   var dist;
@@ -2495,8 +2495,8 @@ function tr_static_init() {
       _dist_code[256 + dist++] = code;
     }
   }
-  for (bits = 0; bits <= MAX_BITS; bits++) {
-    bl_count[bits] = 0;
+  for (bits2 = 0; bits2 <= MAX_BITS; bits2++) {
+    bl_count[bits2] = 0;
   }
   n = 0;
   while (n <= 143) {
@@ -4578,23 +4578,23 @@ var string2buf2 = function(str) {
   }
   return buf;
 };
-var utf8border2 = function(buf, max) {
+var utf8border2 = function(buf, max2) {
   var pos;
-  max = max || buf.length;
-  if (max > buf.length) {
-    max = buf.length;
+  max2 = max2 || buf.length;
+  if (max2 > buf.length) {
+    max2 = buf.length;
   }
-  pos = max - 1;
+  pos = max2 - 1;
   while (pos >= 0 && (buf[pos] & 192) === 128) {
     pos--;
   }
   if (pos < 0) {
-    return max;
+    return max2;
   }
   if (pos === 0) {
-    return max;
+    return max2;
   }
-  return pos + utf8len2(buf[pos]) > max ? pos : max;
+  return pos + utf8len2(buf[pos]) > max2 ? pos : max2;
 };
 var buf2string2 = function(buf) {
   var i, out, c, c_len;
@@ -4764,9 +4764,9 @@ function accumulate(helper, updateCallback) {
       if (updateCallback) {
         updateCallback(meta);
       }
-    }).on("error", function(err2) {
+    }).on("error", function(err3) {
       dataArray = [];
-      reject(err2);
+      reject(err3);
     }).on("end", function() {
       try {
         var result = transformZipOutput(resultType, concat(chunkType, dataArray), mimeType);
@@ -6386,7 +6386,25 @@ for (i = 0; i < 32; ++i)
   fdt[i] = 5;
 var i;
 var flm = /* @__PURE__ */ hMap(flt, 9, 0);
+var flrm = /* @__PURE__ */ hMap(flt, 9, 1);
 var fdm = /* @__PURE__ */ hMap(fdt, 5, 0);
+var fdrm = /* @__PURE__ */ hMap(fdt, 5, 1);
+var max = function(a) {
+  var m = a[0];
+  for (var i = 1; i < a.length; ++i) {
+    if (a[i] > m)
+      m = a[i];
+  }
+  return m;
+};
+var bits = function(d, p, m) {
+  var o = p / 8 | 0;
+  return (d[o] | d[o + 1] << 8) >> (p & 7) & m;
+};
+var bits16 = function(d, p) {
+  var o = p / 8 | 0;
+  return (d[o] | d[o + 1] << 8 | d[o + 2] << 16) >> (p & 7);
+};
 var shft = function(p) {
   return (p + 7) / 8 | 0;
 };
@@ -6396,6 +6414,174 @@ var slc = function(v, s, e) {
   if (e == null || e > v.length)
     e = v.length;
   return new u8(v.subarray(s, e));
+};
+var ec = [
+  "unexpected EOF",
+  "invalid block type",
+  "invalid length/literal",
+  "invalid distance",
+  "stream finished",
+  "no stream handler",
+  ,
+  // determined by compression function
+  "no callback",
+  "invalid UTF-8 data",
+  "extra field too long",
+  "date not in range 1980-2099",
+  "filename too long",
+  "stream finishing",
+  "invalid zip data"
+  // determined by unknown compression method
+];
+var err2 = function(ind, msg2, nt) {
+  var e = new Error(msg2 || ec[ind]);
+  e.code = ind;
+  if (Error.captureStackTrace)
+    Error.captureStackTrace(e, err2);
+  if (!nt)
+    throw e;
+  return e;
+};
+var inflt = function(dat, st, buf, dict) {
+  var sl = dat.length, dl = dict ? dict.length : 0;
+  if (!sl || st.f && !st.l)
+    return buf || new u8(0);
+  var noBuf = !buf;
+  var resize = noBuf || st.i != 2;
+  var noSt = st.i;
+  if (noBuf)
+    buf = new u8(sl * 3);
+  var cbuf = function(l2) {
+    var bl = buf.length;
+    if (l2 > bl) {
+      var nbuf = new u8(Math.max(bl * 2, l2));
+      nbuf.set(buf);
+      buf = nbuf;
+    }
+  };
+  var final = st.f || 0, pos = st.p || 0, bt = st.b || 0, lm = st.l, dm = st.d, lbt = st.m, dbt = st.n;
+  var tbts = sl * 8;
+  do {
+    if (!lm) {
+      final = bits(dat, pos, 1);
+      var type = bits(dat, pos + 1, 3);
+      pos += 3;
+      if (!type) {
+        var s = shft(pos) + 4, l = dat[s - 4] | dat[s - 3] << 8, t = s + l;
+        if (t > sl) {
+          if (noSt)
+            err2(0);
+          break;
+        }
+        if (resize)
+          cbuf(bt + l);
+        buf.set(dat.subarray(s, t), bt);
+        st.b = bt += l, st.p = pos = t * 8, st.f = final;
+        continue;
+      } else if (type == 1)
+        lm = flrm, dm = fdrm, lbt = 9, dbt = 5;
+      else if (type == 2) {
+        var hLit = bits(dat, pos, 31) + 257, hcLen = bits(dat, pos + 10, 15) + 4;
+        var tl = hLit + bits(dat, pos + 5, 31) + 1;
+        pos += 14;
+        var ldt = new u8(tl);
+        var clt = new u8(19);
+        for (var i = 0; i < hcLen; ++i) {
+          clt[clim[i]] = bits(dat, pos + i * 3, 7);
+        }
+        pos += hcLen * 3;
+        var clb = max(clt), clbmsk = (1 << clb) - 1;
+        var clm = hMap(clt, clb, 1);
+        for (var i = 0; i < tl; ) {
+          var r = clm[bits(dat, pos, clbmsk)];
+          pos += r & 15;
+          var s = r >> 4;
+          if (s < 16) {
+            ldt[i++] = s;
+          } else {
+            var c = 0, n = 0;
+            if (s == 16)
+              n = 3 + bits(dat, pos, 3), pos += 2, c = ldt[i - 1];
+            else if (s == 17)
+              n = 3 + bits(dat, pos, 7), pos += 3;
+            else if (s == 18)
+              n = 11 + bits(dat, pos, 127), pos += 7;
+            while (n--)
+              ldt[i++] = c;
+          }
+        }
+        var lt = ldt.subarray(0, hLit), dt = ldt.subarray(hLit);
+        lbt = max(lt);
+        dbt = max(dt);
+        lm = hMap(lt, lbt, 1);
+        dm = hMap(dt, dbt, 1);
+      } else
+        err2(1);
+      if (pos > tbts) {
+        if (noSt)
+          err2(0);
+        break;
+      }
+    }
+    if (resize)
+      cbuf(bt + 131072);
+    var lms = (1 << lbt) - 1, dms = (1 << dbt) - 1;
+    var lpos = pos;
+    for (; ; lpos = pos) {
+      var c = lm[bits16(dat, pos) & lms], sym = c >> 4;
+      pos += c & 15;
+      if (pos > tbts) {
+        if (noSt)
+          err2(0);
+        break;
+      }
+      if (!c)
+        err2(2);
+      if (sym < 256)
+        buf[bt++] = sym;
+      else if (sym == 256) {
+        lpos = pos, lm = null;
+        break;
+      } else {
+        var add = sym - 254;
+        if (sym > 264) {
+          var i = sym - 257, b = fleb[i];
+          add = bits(dat, pos, (1 << b) - 1) + fl[i];
+          pos += b;
+        }
+        var d = dm[bits16(dat, pos) & dms], dsym = d >> 4;
+        if (!d)
+          err2(3);
+        pos += d & 15;
+        var dt = fd[dsym];
+        if (dsym > 3) {
+          var b = fdeb[dsym];
+          dt += bits16(dat, pos) & (1 << b) - 1, pos += b;
+        }
+        if (pos > tbts) {
+          if (noSt)
+            err2(0);
+          break;
+        }
+        if (resize)
+          cbuf(bt + 131072);
+        var end2 = bt + add;
+        if (bt < dt) {
+          var shift = dl - dt, dend = Math.min(dt, end2);
+          if (shift + bt < 0)
+            err2(3);
+          for (; bt < dend; ++bt)
+            buf[bt] = dict[shift + bt];
+        }
+        for (; bt < end2; ++bt)
+          buf[bt] = buf[bt - dt];
+      }
+    }
+    st.l = lm, st.p = lpos, st.b = bt, st.f = final;
+    if (lm)
+      final = 1, st.m = lbt, st.d = dm, st.n = dbt;
+  } while (!final);
+  return bt != buf.length && noBuf ? slc(buf, 0, bt) : buf.subarray(0, bt);
 };
 var wbits = function(d, p, v) {
   v <<= p & 7;
@@ -6715,6 +6901,43 @@ var dopt = function(dat, opt, pre, post, st) {
 function deflateSync(data, opts) {
   return dopt(data, opts || {}, 0, 0);
 }
+var Inflate3 = /* @__PURE__ */ (function() {
+  function Inflate4(opts, cb) {
+    if (typeof opts == "function")
+      cb = opts, opts = {};
+    this.ondata = cb;
+    var dict = opts && opts.dictionary && opts.dictionary.subarray(-32768);
+    this.s = { i: 0, b: dict ? dict.length : 0 };
+    this.o = new u8(32768);
+    this.p = new u8(0);
+    if (dict)
+      this.o.set(dict);
+  }
+  Inflate4.prototype.e = function(c) {
+    if (!this.ondata)
+      err2(5);
+    if (this.d)
+      err2(4);
+    if (!this.p.length)
+      this.p = c;
+    else if (c.length) {
+      var n = new u8(this.p.length + c.length);
+      n.set(this.p), n.set(c, this.p.length), this.p = n;
+    }
+  };
+  Inflate4.prototype.c = function(final) {
+    this.s.i = +(this.d = final || false);
+    var bts = this.s.b;
+    var dt = inflt(this.p, this.s, this.o);
+    this.ondata(slc(dt, bts, this.s.b), this.d);
+    this.o = slc(dt, this.s.b - 32768), this.s.b = this.o.length;
+    this.p = slc(this.p, this.s.p / 8 | 0), this.s.p &= 7;
+  };
+  Inflate4.prototype.push = function(chunk, final) {
+    this.e(chunk), this.c(final);
+  };
+  return Inflate4;
+})();
 var td = typeof TextDecoder != "undefined" && /* @__PURE__ */ new TextDecoder();
 var tds = 0;
 try {
@@ -7084,8 +7307,14 @@ function insideArchive(archive, segments, host, withFragment, directory) {
 
 // ../../node_modules/@mdzip/core-js/dist/mdz-core.js
 var PRODUCER_SPEC_VERSION = MDZ_SPEC_VERSION;
-var CORE_LIBRARY_VERSION = "2.1.1";
+var CORE_LIBRARY_VERSION = "2.2.1";
 var CORE_LIBRARY_URL = "https://github.com/mdzip-project/mdzip-core-js";
+var MDZ_MAX_ENTRIES = 1e5;
+var MDZ_MAX_ENTRY_UNCOMPRESSED_BYTES = 1024 ** 3;
+var MDZ_MAX_TOTAL_UNCOMPRESSED_BYTES = 4 * 1024 ** 3;
+var MDZ_MAX_COMPRESSION_RATIO = 1e3;
+var COMPRESSION_RATIO_APPLIES_ABOVE_BYTES = 1024 * 1024;
+var INFLATE_STEP_BYTES = 8192;
 function isSymlinkEntry(entry) {
   const mode = entry?.unixPermissions;
   return typeof mode === "number" && (mode & 61440) === 40960;
@@ -7138,6 +7367,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
     if (zipFactory) {
       const zip2 = await _MdzArchiveCore.loadOrThrowZipInvalid(() => factory.loadAsync(input));
       _MdzArchiveCore.checkEntryNames(Object.keys(zip2.files));
+      _MdzArchiveCore.checkEntryCount(Object.keys(zip2.files).length);
       return new _MdzArchiveCore(zip2);
     }
     const bytes = await _MdzArchiveCore.readArchiveInputBytes(input);
@@ -7150,6 +7380,8 @@ var MdzArchiveCore = class _MdzArchiveCore {
           throw mdzError("ERR_ZIP_INVALID", `entry '${entry.name}' uses compression method ${entry.method}; MDZip allows 0 (stored) and 8 (DEFLATE) (\xA74)`);
         }
       }
+      _MdzArchiveCore.checkResourceLimits(raw);
+      _MdzArchiveCore.checkCentralDirectoryVisible(raw, zip);
       names = raw.map((entry) => entry.name);
     } catch (error2) {
       if (!(error2 instanceof Error) || !error2.message.startsWith("ERR_ZIP_UNSUPPORTED"))
@@ -7166,6 +7398,53 @@ var MdzArchiveCore = class _MdzArchiveCore {
       if (error2 instanceof MdzError || /^ERR_[A-Z_]+:/.test(error2 instanceof Error ? error2.message : ""))
         throw error2;
       throw mdzError("ERR_ZIP_INVALID", "The file is not a valid ZIP archive.", { cause: error2 });
+    }
+  }
+  static checkEntryCount(count) {
+    if (count > MDZ_MAX_ENTRIES) {
+      throw mdzError("ERR_LIMIT_EXCEEDED", `The archive has ${count} entries (limit ${MDZ_MAX_ENTRIES}).`);
+    }
+  }
+  /**
+   * Rejects an archive whose declared sizes exceed the built-in limits (`ERR_LIMIT_EXCEEDED`, §13.1),
+   * before anything is decompressed. Actual sizes are checked again on every read, since declared
+   * sizes can lie.
+   */
+  static checkResourceLimits(raw) {
+    _MdzArchiveCore.checkEntryCount(raw.length);
+    let total = 0;
+    for (const entry of raw) {
+      if (entry.name.endsWith("/"))
+        continue;
+      const size = entry.uncompressedSize;
+      if (size > MDZ_MAX_ENTRY_UNCOMPRESSED_BYTES) {
+        throw mdzError("ERR_LIMIT_EXCEEDED", `'${entry.name}' is ${size} bytes (limit ${MDZ_MAX_ENTRY_UNCOMPRESSED_BYTES}).`);
+      }
+      if (size > COMPRESSION_RATIO_APPLIES_ABOVE_BYTES && entry.compressedSize > 0 && size / entry.compressedSize > MDZ_MAX_COMPRESSION_RATIO) {
+        throw mdzError("ERR_LIMIT_EXCEEDED", `'${entry.name}' has compression ratio ${Math.round(size / entry.compressedSize)}:1 (limit ${MDZ_MAX_COMPRESSION_RATIO}:1).`);
+      }
+      total += size;
+      if (total > MDZ_MAX_TOTAL_UNCOMPRESSED_BYTES) {
+        throw mdzError("ERR_LIMIT_EXCEEDED", `The archive's total uncompressed size exceeds ${MDZ_MAX_TOTAL_UNCOMPRESSED_BYTES} bytes.`);
+      }
+    }
+  }
+  /**
+   * The central directory governs (§4): every entry it lists must be one JSZip exposes, and no two
+   * may share data. Otherwise entries would be hidden silently (`ERR_ZIP_INVALID`).
+   */
+  static checkCentralDirectoryVisible(raw, zip) {
+    const visible = new Set(Object.keys(zip.files).map((name) => _MdzArchiveCore.normalizePath(name)));
+    const offsets = /* @__PURE__ */ new Map();
+    for (const entry of raw) {
+      const other = offsets.get(entry.localOffset);
+      if (other !== void 0) {
+        throw mdzError("ERR_ZIP_INVALID", `'${entry.name}' and '${other}' share the same data in the archive.`);
+      }
+      offsets.set(entry.localOffset, entry.name);
+      if (!visible.has(entry.name)) {
+        throw mdzError("ERR_ZIP_INVALID", `'${entry.name}' is in the central directory but can't be read.`);
+      }
     }
   }
   /** Rejects NFC-duplicate entries and files that are also directories (§5.4, §13.1): never picks one. */
@@ -7297,7 +7576,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
       normalizedWrites.delete(key);
     }
     const changing = normalizedWrites.size > 0 || normalizedRemovals.size > 0;
-    const existingManifest = await _MdzArchiveCore.readExistingManifestObject(archive.zip, changing);
+    const existingManifest = await _MdzArchiveCore.readExistingManifestObject(archive, changing);
     const entryPointBefore = MdzPackagerCore.resolveEntryPoint(existingPaths, existingManifest);
     const manifestWrite = normalizedWrites.get("manifest.json");
     let manifestObject = null;
@@ -8048,8 +8327,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
    * @param path - Archive-relative file path.
    */
   async readText(path) {
-    const entry = this.getFileEntryOrThrow(path);
-    return String(await entry.async("text"));
+    return this.readEntryText(this.getFileEntryOrThrow(path));
   }
   /**
    * Reads raw bytes from an entry.
@@ -8057,9 +8335,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
    * @param path - Archive-relative file path.
    */
   async readBytes(path) {
-    const entry = this.getFileEntryOrThrow(path);
-    const out = await entry.async("arraybuffer");
-    return new Uint8Array(out);
+    return this.readEntryData(this.getFileEntryOrThrow(path));
   }
   /**
    * Reads entry content as raw base64 (no data URI prefix).
@@ -8067,8 +8343,100 @@ var MdzArchiveCore = class _MdzArchiveCore {
    * @param path - Archive-relative file path.
    */
   async readBase64(path) {
-    const entry = this.getFileEntryOrThrow(path);
-    return String(await entry.async("base64"));
+    const bytes = await this.readEntryData(this.getFileEntryOrThrow(path));
+    let binary2 = "";
+    for (let i = 0; i < bytes.length; i += 32768) {
+      binary2 += String.fromCharCode(...bytes.subarray(i, i + 32768));
+    }
+    return btoa(binary2);
+  }
+  /** Central directory records by normalized name, from the raw bytes; null when unavailable. */
+  rawEntryIndex;
+  getRawEntry(name) {
+    if (this.rawEntryIndex === void 0) {
+      this.rawEntryIndex = null;
+      if (this.rawBytes) {
+        try {
+          this.rawEntryIndex = new Map(_MdzArchiveCore.parseRawZipEntries(this.rawBytes).map((e) => [e.name, e]));
+        } catch (error2) {
+          if (!(error2 instanceof Error) || !error2.message.startsWith("ERR_ZIP_UNSUPPORTED"))
+            throw error2;
+        }
+      }
+    }
+    return this.rawEntryIndex?.get(_MdzArchiveCore.normalizePath(name));
+  }
+  /**
+   * An entry's bytes. Decompressed from the archive bytes when they're available, stopping at the
+   * declared size and checking the CRC-32: data past the declared size is `ERR_LIMIT_EXCEEDED`;
+   * short, mismatched or undecompressable data is `ERR_ZIP_INVALID` (§13.1). Never returns corrupt
+   * data as success. Archives opened with a custom ZIP factory are read through it.
+   */
+  async readEntryData(entry) {
+    const raw = this.getRawEntry(entry.name);
+    if (raw && this.rawBytes) {
+      return _MdzArchiveCore.inflateEntryChecked(this.rawBytes, raw);
+    }
+    try {
+      return new Uint8Array(await entry.async("arraybuffer"));
+    } catch (error2) {
+      throw mdzError("ERR_ZIP_INVALID", `'${entry.name}' is corrupt.`, { cause: error2 });
+    }
+  }
+  /** An entry's UTF-8 text, checked as {@link readEntryData} describes. A leading BOM is kept. */
+  async readEntryText(entry) {
+    return new TextDecoder("utf-8", { ignoreBOM: true }).decode(await this.readEntryData(entry));
+  }
+  static inflateEntryChecked(source, raw) {
+    const corrupt = (detail, cause) => mdzError("ERR_ZIP_INVALID", `'${raw.name}' is corrupt: ${detail}.`, cause === void 0 ? void 0 : { cause });
+    const view = new DataView(source.buffer, source.byteOffset, source.byteLength);
+    const local = raw.localOffset;
+    if (local + 30 > source.length || view.getUint32(local, true) !== 67324752) {
+      throw corrupt("its local header is missing");
+    }
+    const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+    const end2 = start + raw.compressedSize;
+    if (end2 > source.length)
+      throw corrupt("its data runs past the end of the archive");
+    const compressed = source.subarray(start, end2);
+    const declared = raw.uncompressedSize;
+    let out;
+    if (raw.method === 0) {
+      if (compressed.length !== declared)
+        throw corrupt("its stored size does not match its declared size");
+      out = compressed.slice();
+    } else {
+      const buffer = new Uint8Array(declared);
+      out = buffer;
+      let filled = 0;
+      let overflow = false;
+      const inflater = new Inflate3((chunk) => {
+        if (filled + chunk.length > declared) {
+          overflow = true;
+          throw new Error("overflow");
+        }
+        buffer.set(chunk, filled);
+        filled += chunk.length;
+      });
+      try {
+        let offset = 0;
+        do {
+          const next = Math.min(offset + INFLATE_STEP_BYTES, compressed.length);
+          inflater.push(compressed.subarray(offset, next), next >= compressed.length);
+          offset = next;
+        } while (offset < compressed.length);
+      } catch (error2) {
+        if (overflow) {
+          throw mdzError("ERR_LIMIT_EXCEEDED", `'${raw.name}' decompresses to more than its declared size.`);
+        }
+        throw corrupt("its compressed data is invalid", error2);
+      }
+      if (filled !== declared)
+        throw corrupt("it decompresses to less than its declared size");
+    }
+    if (_MdzArchiveCore.crc32(out) !== raw.crc >>> 0)
+      throw corrupt("its checksum does not match");
+    return out;
   }
   /**
    * Reads entry content and returns a data URI string.
@@ -8240,7 +8608,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
       _MdzArchiveCore.manifestCache.set(this.zip, null);
       return null;
     }
-    const { manifest, duplicateMembers } = parseManifestText(String(await entry.async("text")));
+    const { manifest, duplicateMembers } = parseManifestText(await this.readEntryText(entry));
     const ignoredFields = checkManifest(manifest);
     _MdzArchiveCore.checkLegacyMdzField(manifest);
     const normalized = { ...manifest };
@@ -8436,7 +8804,8 @@ var MdzArchiveCore = class _MdzArchiveCore {
   }
   /**
    * Extracts every image reference target found in a block of Markdown text,
-   * from both `![alt](target)` syntax and raw `<img src="target">` HTML tags
+   * from both `![alt](target)` syntax and raw `<img src="target">` HTML tags,
+   * ignoring fenced/indented code blocks and inline code spans
    * (used for sizing/alignment control Markdown syntax can't express).
    * Targets are returned raw/unresolved — relative to whatever base the
    * caller's markdown lives at — with surrounding `<...>` wrapping and
@@ -8450,6 +8819,7 @@ var MdzArchiveCore = class _MdzArchiveCore {
    * time, leaving other independent copies elsewhere still `![]()`-only.
    */
   static extractImageReferences(markdown) {
+    markdown = _MdzArchiveCore.maskMarkdownCode(markdown);
     const refs = [];
     const mdRe = new RegExp(_MdzArchiveCore.MARKDOWN_IMAGE_REF_RE.source, "g");
     let match;
@@ -8467,6 +8837,141 @@ var MdzArchiveCore = class _MdzArchiveCore {
       refs.push(raw);
     }
     return refs;
+  }
+  // CommonMark HTML blocks (spec section 4.6). Markdown inside one is raw
+  // HTML, never an image, but an <img src> there still is one (#11).
+  // Conditions 1-5 end on the line matching `end`; 6 and 7 at a blank line.
+  static HTML_BLOCK_STARTS = [
+    { start: /^ {0,3}<(?:pre|script|style|textarea)(?:[\s>]|$)/i, end: /<\/(?:pre|script|style|textarea)>/i, interruptsParagraph: true },
+    { start: /^ {0,3}<!--/, end: /-->/, interruptsParagraph: true },
+    { start: /^ {0,3}<\?/, end: /\?>/, interruptsParagraph: true },
+    { start: /^ {0,3}<![A-Za-z]/, end: />/, interruptsParagraph: true },
+    { start: /^ {0,3}<!\[CDATA\[/, end: /\]\]>/, interruptsParagraph: true },
+    {
+      start: /^ {0,3}<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[\s>]|\/>|$)/i,
+      interruptsParagraph: true
+    },
+    {
+      start: /^ {0,3}(?:<(?!(?:pre|script|style|textarea)[\s/>])[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][\w.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>|<\/[A-Za-z][A-Za-z0-9-]*\s*>)[ \t]*$/i,
+      interruptsParagraph: false
+    }
+  ];
+  /** Hide code, and Markdown image syntax in HTML blocks, before scanning images, preserving newlines and source positions. */
+  static maskMarkdownCode(markdown) {
+    const blank = (text) => text.replace(/[^\r\n]/g, " ");
+    const blankMarkdownImages = (text) => text.replace(new RegExp(_MdzArchiveCore.MARKDOWN_IMAGE_REF_RE.source, "g"), blank);
+    let fence;
+    let indented = false;
+    let paragraph = false;
+    let html;
+    const htmlRanges = [];
+    let offset = 0;
+    const inHtmlBlock = (line) => {
+      htmlRanges.push([offset, offset + line.length]);
+      return blankMarkdownImages(line);
+    };
+    const blocks = markdown.split(/(?<=\n)/).map((line) => {
+      const content = line.replace(/[\r\n]+$/, "");
+      try {
+        return maskLine(line, content);
+      } finally {
+        offset += line.length;
+      }
+    }).join("");
+    function maskLine(line, content) {
+      if (html !== void 0) {
+        if (html === null) {
+          if (/^[ \t]*$/.test(content)) {
+            html = void 0;
+            paragraph = false;
+            return line;
+          }
+        } else if (html.test(content)) {
+          html = void 0;
+          paragraph = false;
+        }
+        return inHtmlBlock(line);
+      }
+      return maskMarkdownLine(line, content);
+    }
+    function maskMarkdownLine(line, content) {
+      if (fence) {
+        const close = /^ {0,3}(`+|~+)[ \t]*$/.exec(content);
+        if (close && close[1][0] === fence[0] && close[1].length >= fence.length)
+          fence = void 0;
+        return blank(line);
+      }
+      const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(content);
+      if (open && (open[1][0] !== "`" || !open[2].includes("`"))) {
+        fence = open[1];
+        paragraph = false;
+        indented = false;
+        return blank(line);
+      }
+      if (/^[ \t]*$/.test(content)) {
+        paragraph = false;
+        return line;
+      }
+      if (/^(?: {4}| {0,3}\t)/.test(content) && (indented || !paragraph)) {
+        indented = true;
+        return blank(line);
+      }
+      indented = false;
+      for (const kind of _MdzArchiveCore.HTML_BLOCK_STARTS) {
+        if (paragraph && !kind.interruptsParagraph)
+          continue;
+        const start = kind.start.exec(content);
+        if (!start)
+          continue;
+        html = kind.end && kind.end.test(content.slice(start[0].length)) ? void 0 : kind.end ?? null;
+        paragraph = false;
+        return inHtmlBlock(line);
+      }
+      paragraph = true;
+      return line;
+    }
+    let rangeIndex = 0;
+    const runs = [...blocks.matchAll(/`+/g)].filter((run) => {
+      while (rangeIndex < htmlRanges.length && htmlRanges[rangeIndex][1] <= run.index)
+        rangeIndex++;
+      return rangeIndex >= htmlRanges.length || htmlRanges[rangeIndex][0] > run.index;
+    });
+    const next = /* @__PURE__ */ new Map();
+    const closing = /* @__PURE__ */ new Map();
+    for (let i = runs.length - 1; i >= 0; i--) {
+      const length = runs[i][0].length;
+      const following = next.get(length);
+      if (following !== void 0)
+        closing.set(i, following);
+      next.set(length, i);
+    }
+    const pieces = [];
+    const tags = [...blocks.matchAll(/<[A-Za-z/](?:[^>"']|"[^"]*"|'[^']*')*>/g)];
+    let tagIndex = 0;
+    let copied = 0;
+    for (let i = 0; i < runs.length; i++) {
+      const start = runs[i].index;
+      while (tagIndex < tags.length && tags[tagIndex].index + tags[tagIndex][0].length <= start)
+        tagIndex++;
+      if (tagIndex < tags.length && tags[tagIndex].index <= start)
+        continue;
+      let slashes = 0;
+      for (let p = start - 1; p >= 0 && blocks[p] === "\\"; p--)
+        slashes++;
+      if (slashes % 2)
+        continue;
+      const endRun = closing.get(i);
+      if (endRun === void 0)
+        continue;
+      const end2 = runs[endRun].index + runs[endRun][0].length;
+      if (/\r?\n[ \t]*\r?\n/.test(blocks.slice(start, end2)))
+        continue;
+      pieces.push(blocks.slice(copied, start), blank(blocks.slice(start, end2)));
+      copied = end2;
+      i = endRun;
+    }
+    pieces.push(blocks.slice(copied));
+    return pieces.join("");
   }
   static cleanMarkdownLinkTarget(raw) {
     let target = raw.trim();
@@ -8504,11 +9009,11 @@ var MdzArchiveCore = class _MdzArchiveCore {
   static normaliseLf(content) {
     return content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   }
-  static async readExistingManifestObject(zip, requireValid) {
-    const manifestEntry = Object.entries(zip.files).find(([p, entry]) => _MdzArchiveCore.normalizePath(p) === "manifest.json" && !entry.dir)?.[1];
+  static async readExistingManifestObject(archive, requireValid) {
+    const manifestEntry = Object.entries(archive.zip.files).find(([p, entry]) => _MdzArchiveCore.normalizePath(p) === "manifest.json" && !entry.dir)?.[1];
     if (!manifestEntry)
       return null;
-    const raw = await manifestEntry.async("text");
+    const raw = await archive.readEntryText(manifestEntry);
     try {
       const parsed = JSON.parse(String(raw));
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -9336,8 +9841,8 @@ function respondBytes(id, bytes) {
   ctx.postMessage({ id, ok: true, result: buffer }, [buffer]);
 }
 function respondError(id, error2) {
-  const err2 = error2 instanceof Error ? error2 : new Error(String(error2));
-  ctx.postMessage({ id, ok: false, error: { name: err2.name, message: err2.message } });
+  const err3 = error2 instanceof Error ? error2 : new Error(String(error2));
+  ctx.postMessage({ id, ok: false, error: { name: err3.name, message: err3.message } });
 }
 ctx.onmessage = (event) => {
   const request = event.data;

@@ -1058,9 +1058,9 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     // pre-bundled worker script lives under the webview's resource origin.
     const workerUri = webview.asWebviewUri(vscode.Uri.file(path.join(mediaDir, 'mdz-archive.worker.js')));
     const nonce = getNonce();
-    // Remote images (https: only, like VS Code's Markdown preview) unless the user turned
-    // them off. Read once per editor: a settings change applies to editors opened after it.
-    const remoteImages = vscode.workspace.getConfiguration('mdzip').get<boolean>('remoteImages', true) ? ' https:' : '';
+    // Remote images (https: only, like VS Code's Markdown preview) only if the user turned
+    // them on (off by default: loading one tells its server the document was opened). Read once per editor: a settings change applies to editors opened after it.
+    const remoteImages = vscode.workspace.getConfiguration('mdzip').get<boolean>('remoteImages', false) ? ' https:' : '';
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">

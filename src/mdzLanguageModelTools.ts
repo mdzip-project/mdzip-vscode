@@ -20,6 +20,7 @@ const TOOL_NAME_TO_HANDLER_NAME: Record<string, string> = {
   mdzip_read_image: 'mdz_read_image',
   mdzip_read_markdown_embedded_images: 'mdz_read_markdown_embedded_images',
   mdzip_upsert_canonical_document: 'upsert_canonical_document',
+  mdzip_create_archive: 'mdz_create_archive',
   mdzip_write_entry: 'mdz_write_entry',
   mdzip_remove_entry: 'mdz_remove_entry',
 };
@@ -39,6 +40,21 @@ function writeConfirmation(handlerName: string, input: Record<string, unknown> |
           ),
         },
       };
+    case 'mdz_create_archive': {
+      const fileCount = Array.isArray(input?.files) ? input.files.length : 0;
+      const overwriting = input?.overwrite === true;
+      return {
+        invocationMessage: `Creating ${archivePath}`,
+        confirmationMessages: {
+          title: overwriting ? 'Replace an MDZip file?' : 'Create an MDZip file?',
+          message: new vscode.MarkdownString(
+            overwriting
+              ? `This creates \`${archivePath}\` with ${fileCount} file(s), **replacing it if it already exists**.`
+              : `This creates \`${archivePath}\` with ${fileCount} file(s). It's refused if a file with that name already exists.`
+          ),
+        },
+      };
+    }
     case 'mdz_write_entry': {
       const replacing = typeof input?.expectedEntryHash === 'string' && input.expectedEntryHash.trim() !== '';
       return {
