@@ -5,6 +5,8 @@ import * as os from 'os';
 import { promises as fs } from 'fs';
 import { execFile } from 'child_process';
 import type { GitExtension } from './vendor/git';
+import { readGitBlob } from './gitBlob';
+import { readArchiveBytes } from './mdzBytes';
 import { MdzEditorProvider, getNonce, postToWebviewSafely } from './mdzEditorProvider';
 import { MdzDiffPanel } from './mdzDiffPanel';
 import { initLogging, logInfo, logError } from './mdzLog';
@@ -162,12 +164,10 @@ async function getGitBaseBytes(fileUri: vscode.Uri): Promise<Buffer | undefined>
   const repo = api.getRepository(fileUri);
   if (!repo) throw new Error('File is not inside a git repository');
 
-  const relPath = fileUri.fsPath
-    .substring(repo.rootUri.fsPath.length + 1)
-    .replace(/\\/g, '/');
-
+  // Not repo.buffer(): it runs `git show --textconv`, which returns text
+  // instead of the ZIP when the repository is set up for `mdz textconv`.
   try {
-    return await repo.buffer('HEAD', relPath);
+    return await readGitBlob(api.git.path || 'git', 'HEAD', fileUri.fsPath);
   } catch {
     return undefined;
   }
@@ -283,6 +283,10 @@ export interface MdzipTestApi {
    * a reload, same as the empty-to-first-folder case), so tests call this directly instead.
    */
   runClaudeMcpRepairCheck(): Promise<void>;
+  /** Reads a file to open as an archive, the way the editor and diff view do (src/mdzBytes.ts). */
+  readArchiveBytes(uri: vscode.Uri): Promise<Uint8Array>;
+  /** Whether an MDZip archive diff panel is open for this file. */
+  hasDiffPanel(filePath: string): boolean;
 }
 
 export function activate(context: vscode.ExtensionContext): MdzipTestApi {
@@ -291,6 +295,7 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
   logInfo(`Activating extension version ${version}`);
 
   context.subscriptions.push(MdzEditorProvider.register(context));
+  MdzDiffPanel.usePreferences(context.globalState);
 
   const bundledServerPath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'mdz-mcp-server.js').fsPath;
   const bundledServerConfig: { type: 'stdio'; command: string; args: string[] } = {
@@ -1281,6 +1286,8 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
     runMcpTool(name, args) { return handleToolCall(name, args); },
     getUserMcpConfigPath() { return getUserMcpConfigUri(context).fsPath; },
     runClaudeMcpRepairCheck() { return maybeRepairClaudeMcpConfig(context); },
+    readArchiveBytes(uri) { return readArchiveBytes(uri); },
+    hasDiffPanel(filePath) { return MdzDiffPanel.hasForFilePath(filePath); },
   };
 }
 

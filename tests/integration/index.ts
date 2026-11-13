@@ -7,6 +7,7 @@ export function run(): Promise<void> {
   mocha.addFile(path.resolve(__dirname, 'mcp-config.test.js'));
   mocha.addFile(path.resolve(__dirname, 'claude-mcp-config.test.js'));
   mocha.addFile(path.resolve(__dirname, 'archive-entry.test.js'));
+  mocha.addFile(path.resolve(__dirname, 'git-textconv.test.js'));
 
   return new Promise((resolve, reject) => {
     mocha.run(failures => {

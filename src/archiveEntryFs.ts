@@ -3,6 +3,7 @@ import { promises as fsPromises } from 'fs';
 import * as vscode from 'vscode';
 import { MdzArchiveCore } from '@mdzip/core-js';
 import { MdzEditorProvider } from './mdzEditorProvider';
+import { readArchiveBytes } from './mdzBytes';
 
 // A file system for the files inside an .mdz, so any VS Code editor can open
 // one: draw.io for a .drawio.svg, the PDF viewer for a .pdf, the text editor
@@ -89,7 +90,7 @@ export class ArchiveEntryFileSystem implements vscode.FileSystemProvider {
     const key = archiveUri.toString();
     const cached = this.cache.get(key);
     if (cached && cached.mtime === stat.mtime && cached.size === stat.size) return { ...cached, stat };
-    const bytes = new Uint8Array(await vscode.workspace.fs.readFile(archiveUri));
+    const bytes = new Uint8Array(await readArchiveBytes(archiveUri));
     const entry = { mtime: stat.mtime, size: stat.size, bytes, archive: await MdzArchiveCore.open(bytes) };
     this.cache.set(key, entry);
     return { ...entry, stat };
@@ -213,7 +214,7 @@ export function registerArchiveEntryFileSystem(context: vscode.ExtensionContext)
       if (!archiveUri) return;
       let entryPath = typeof entryArg === 'string' ? entryArg : undefined;
       if (!entryPath) {
-        const archive = await MdzArchiveCore.open(new Uint8Array(await vscode.workspace.fs.readFile(archiveUri)));
+        const archive = await MdzArchiveCore.open(new Uint8Array(await readArchiveBytes(archiveUri)));
         const choice = await vscode.window.showQuickPick(
           archive.listPaths().filter((p) => p !== 'manifest.json').map((p) => ({ label: p.split('/').pop() ?? p, description: p, path: p })),
           { placeHolder: 'Open a file from the archive in a VS Code editor' }

@@ -1,5 +1,15 @@
 # Change Log
 
+## [Unreleased]
+
+### Added
+- **See a document's changes rendered.** The archive comparison (from Source Control, or **Compare Archive Contents with Git Base**) has two new toolbar buttons, as in the editor: **#** for the Markdown source and the eye for **Show rendered Markdown**, which shows both versions as the preview shows them, pictures included, marks what changed (red for the old version, green for the new), scrolls the two sides together and opens at the first change. It remembers your choice for the next comparison. Needs `@mdzip/editor` with the rendered diff view.
+
+### Fixed
+- **The comparison's toolbar no longer has a show-unchanged button** (its eye icon looked like "rendered"). Unchanged files stay in the file list, dimmed.
+- **The comparison's toolbar shows which buttons are on.** Pressed buttons use your theme's toggle colours (like the Aa / ab / .* buttons in Search), so they stand out in dark themes too.
+- **Git diffs of `.mdz` files work in repositories set up for `mdz textconv`.** VS Code reads the committed version of a file through Git's text conversion, so in a repository that turns on [`mdz textconv`](https://github.com/mdzip-project/mdzip-cli#mdz-textconv-archive) for readable `git diff` output, the editor got the archive printed as text. Clicking a changed `.mdz` in Source Control showed "The editor could not be opened", and **Compare Archive Contents with Git Base** and **Compare Document Markdown with Git Base** failed the same way. The editor now reads the archive itself from Git.
+
 ## [1.7.2] - 2026-11-11
 
 ### Added

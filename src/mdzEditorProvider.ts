@@ -3,6 +3,7 @@ import * as path from 'path';
 import { MdzDocument, MdzDiskConflictError } from './mdzDocument';
 import { MdzDiffPanel } from './mdzDiffPanel';
 import { logInfo, logError } from './mdzLog';
+import { readArchiveBytes } from './mdzBytes';
 import { MdzStatsStatusBar } from './mdzStatsStatusBar';
 import { MARKDOWN_ICON_ID, MDZ_ICON_ID, parseStatsReport } from './mdzStats';
 import {
@@ -2069,7 +2070,7 @@ function gitUriWithRef(uri: vscode.Uri, ref: string): vscode.Uri {
 
 async function readUriBytes(uri: vscode.Uri): Promise<Uint8Array | undefined> {
   try {
-    return new Uint8Array(await vscode.workspace.fs.readFile(uri));
+    return new Uint8Array(await readArchiveBytes(uri));
   } catch {
     return undefined;
   }

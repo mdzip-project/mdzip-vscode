@@ -13,6 +13,7 @@ import {
 } from '@mdzip/editor';
 import { MdzArchiveCore } from '@mdzip/core-js';
 import { logInfo, logError } from './mdzLog';
+import { readArchiveBytes } from './mdzBytes';
 
 /**
  * Represents an open .mdz document.
@@ -121,7 +122,7 @@ export class MdzDocument implements vscode.CustomDocument {
 
   /** Factory — reads the file from disk and parses the archive. */
   public static async create(uri: vscode.Uri): Promise<MdzDocument> {
-    const bytes = await vscode.workspace.fs.readFile(uri);
+    const bytes = await readArchiveBytes(uri);
     const readOnly = await MdzDocument._statReadOnly(uri);
     const doc = await MdzDocument._createFromBytes(uri, bytes, readOnly);
     await doc._setDiskBaseline(bytes);
@@ -408,7 +409,7 @@ export class MdzDocument implements vscode.CustomDocument {
 
   /** Revert the document to its last saved state. */
   public async revert(): Promise<void> {
-    const bytes = await vscode.workspace.fs.readFile(this.uri);
+    const bytes = await readArchiveBytes(this.uri);
     this._convertedToMdz = false;
     await this._loadFromBytes(bytes);
   }

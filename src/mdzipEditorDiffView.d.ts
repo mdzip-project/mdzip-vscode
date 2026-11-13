@@ -23,11 +23,15 @@ declare module '@mdzip/editor/diff-view' {
     initialPath?: string;
     showUnchanged?: boolean;
     navigationVisible?: boolean;
+    /** Show Markdown entries rendered instead of as source (@mdzip/editor 2.5+). */
+    rendered?: boolean;
+    colorScheme?: 'light' | 'dark';
     toolbarActions?: readonly MdzipDiffToolbarAction[];
     onSelectionChanged?: (event: {
       path: string;
       entry: unknown;
     }) => void;
+    onRenderedChanged?: (rendered: boolean) => void;
     onFailed?: (error: Error) => void;
   }
 
@@ -36,6 +40,8 @@ declare module '@mdzip/editor/diff-view' {
     open(options: MdzipDiffViewOptions): Promise<void>;
     openPath(path: string): Promise<boolean>;
     setShowUnchanged(show: boolean): void;
+    setRendered(rendered: boolean): Promise<void>;
+    readonly isRendered: boolean;
     setNavigationVisible(visible: boolean): void;
     setToolbarActions(actions: readonly MdzipDiffToolbarAction[]): void;
     destroy(): void;

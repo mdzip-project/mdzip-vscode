@@ -18,6 +18,7 @@ interface LoadDiffMessage {
   readonly type: 'loadDiff';
   readonly before: DiffSideMessage;
   readonly after: DiffSideMessage;
+  readonly rendered?: boolean;
 }
 
 declare const acquireVsCodeApi: () => VsCodeApi;
@@ -49,6 +50,12 @@ window.addEventListener('message', async (event: MessageEvent<LoadDiffMessage>) 
     after: toDiffSide(message.after),
     showUnchanged: true,
     navigationVisible: true,
+    // Keep the current choice across a refresh; the extension's remembered one otherwise.
+    rendered: diffView?.isRendered ?? message.rendered ?? false,
+    colorScheme: vscodeColorScheme(),
+    onRenderedChanged(rendered) {
+      vscode.postMessage({ type: 'renderedChanged', rendered });
+    },
     toolbarActions: [{
       id: 'refresh',
       label: 'Refresh comparison',
@@ -99,6 +106,14 @@ function toDiffSide(side: DiffSideMessage): {
     fileName: side.fileName,
     missingMessage: side.missingMessage,
   };
+}
+
+// VS Code marks the webview body with the theme kind.
+function vscodeColorScheme(): 'light' | 'dark' {
+  const classes = document.body.classList;
+  return classes.contains('vscode-dark') || classes.contains('vscode-high-contrast') && !classes.contains('vscode-high-contrast-light')
+    ? 'dark'
+    : 'light';
 }
 
 function base64ToBytes(value: string): Uint8Array {

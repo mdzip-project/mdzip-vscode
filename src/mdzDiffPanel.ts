@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { readArchiveBytes } from './mdzBytes';
 
 export interface MdzDiffSideInput {
   readonly label: string;
@@ -27,13 +28,23 @@ interface DiffWebviewLoadMessage {
   readonly type: 'loadDiff';
   readonly before: DiffWebviewSide;
   readonly after: DiffWebviewSide;
+  /** Show Markdown rendered instead of as source; the last choice, remembered. */
+  readonly rendered: boolean;
 }
+
+const RENDERED_PREFERENCE_KEY = 'mdzip.diff.rendered';
 
 /**
  * Read-only semantic diff panel for comparing two MDZip archives.
  */
 export class MdzDiffPanel {
   private static readonly panels = new Map<string, MdzDiffPanel>();
+  private static preferences: vscode.Memento | undefined;
+
+  /** Where the rendered/source choice is remembered (the extension's global state). */
+  public static usePreferences(memento: vscode.Memento): void {
+    MdzDiffPanel.preferences = memento;
+  }
 
   public static hasForFilePath(filePath: string): boolean {
     return MdzDiffPanel.panels.has(diffPanelKeyForUri(vscode.Uri.file(filePath)));
@@ -96,6 +107,9 @@ export class MdzDiffPanel {
         await this.postInput();
       } else if (typedEvent.type === 'refresh') {
         await this.refresh();
+      } else if (typedEvent.type === 'renderedChanged') {
+        const rendered = (event as { rendered?: unknown }).rendered === true;
+        await MdzDiffPanel.preferences?.update(RENDERED_PREFERENCE_KEY, rendered);
       } else if (typedEvent.type === 'failed') {
         const detail = typeof typedEvent.message === 'string'
           ? typedEvent.message
@@ -132,6 +146,7 @@ export class MdzDiffPanel {
       type: 'loadDiff',
       before: toWebviewSide(this.input.before),
       after: toWebviewSide(this.input.after),
+      rendered: MdzDiffPanel.preferences?.get<boolean>(RENDERED_PREFERENCE_KEY, false) ?? false,
     };
     await this.panel.webview.postMessage(message);
   }
@@ -153,7 +168,7 @@ async function loadSideBytes(input: MdzDiffSideInput): Promise<Uint8Array | unde
     return input.loadBytes();
   }
   try {
-    return await vscode.workspace.fs.readFile(input.uri);
+    return await readArchiveBytes(input.uri);
   } catch {
     return undefined;
   }
@@ -203,6 +218,10 @@ function buildDiffHtml(
       --mdzip-border-color: var(--vscode-panel-border);
       --mdzip-hover-background-color: var(--vscode-list-hoverBackground);
       --mdzip-accent-color: var(--vscode-focusBorder);
+      /* Pressed toolbar toggles look like VS Code's own (search's Aa / ab / .*). */
+      --mdzip-active-background-color: var(--vscode-inputOption-activeBackground, rgba(127, 127, 127, 0.22));
+      --mdzip-active-foreground-color: var(--vscode-inputOption-activeForeground, var(--vscode-foreground));
+      --mdzip-active-border-color: var(--vscode-inputOption-activeBorder, transparent);
       overflow: hidden;
     }
     #mdzip-diff-loading {

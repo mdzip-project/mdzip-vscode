@@ -969,13 +969,15 @@
     "test:stats": "npm run bundle:test-stats && node --test tests/mdzStats.test.cjs",
     "bundle:test-linked-image": "esbuild src/mdLinkedImage.ts --bundle --outfile=dist/test/mdLinkedImage.cjs --format=cjs --platform=node",
     "test:linked-image": "npm run bundle:test-linked-image && node --test tests/mdLinkedImage.test.cjs",
+    "bundle:test-git-blob": "esbuild src/gitBlob.ts --bundle --outfile=dist/test/gitBlob.cjs --format=cjs --platform=node",
+    "test:git-blob": "npm run bundle:test-git-blob && node --test tests/gitBlob.test.cjs",
     "bundle:test-templates": "esbuild src/mdzTemplates.ts --bundle --outfile=dist/test/mdzTemplates.cjs --alias:vscode=./tests/vscode-mock.cjs --alias:jsdom=./src/jsdomStub.js --format=cjs --platform=node",
     "test:templates": "npm run bundle:test-templates && node --test tests/mdzTemplates.test.cjs",
     "compile": "tsc -p ./",
     "compile:integration": "tsc -p tsconfig.integration.json",
     "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --alias:jsdom=./src/jsdomStub.js --format=cjs --platform=node --watch",
     "lint": "eslint src --ext ts",
-    "test": "npm run test:editor && npm run test:mcp-smoke && npm run test:document && npm run test:templates && npm run test:editor-provider && npm run test:stats && npm run test:linked-image",
+    "test": "npm run test:editor && npm run test:mcp-smoke && npm run test:document && npm run test:templates && npm run test:editor-provider && npm run test:stats && npm run test:linked-image && npm run test:git-blob",
     "test:integration": "npm run bundle && npm run compile:integration && node dist/integration/runTests.js"
   },
   "devDependencies": {
