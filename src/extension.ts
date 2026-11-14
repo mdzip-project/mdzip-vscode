@@ -4,11 +4,13 @@ import * as path from 'path';
 import * as os from 'os';
 import { promises as fs } from 'fs';
 import { execFile } from 'child_process';
-import type { GitExtension } from './vendor/git';
 import { readGitBlob } from './gitBlob';
 import { readArchiveBytes } from './mdzBytes';
 import { MdzEditorProvider, getNonce, postToWebviewSafely } from './mdzEditorProvider';
 import { MdzDiffPanel } from './mdzDiffPanel';
+import { getGitRepoInfo, isMarkdownUri, openMarkdownGitDiff } from './mdGitDiff';
+import { MdCompareEditorProvider } from './mdCompareEditor';
+import { MdzMergePanel, mergeAgain, registerConflictPrompt, setUpMergeDriver } from './mdzMergePanel';
 import { initLogging, logInfo, logError } from './mdzLog';
 import { registerMdzLanguageModelTools } from './mdzLanguageModelTools';
 import { handleToolCall, type ToolResult } from './mdzToolHandlers';
@@ -156,18 +158,12 @@ function isMdzUriDirtyInTab(uri: vscode.Uri): boolean {
 }
 
 async function getGitBaseBytes(fileUri: vscode.Uri): Promise<Buffer | undefined> {
-  const gitExt = vscode.extensions.getExtension<GitExtension>('vscode.git');
-  if (!gitExt) throw new Error('Git extension not available');
-  if (!gitExt.isActive) await gitExt.activate();
-  const api = gitExt.exports.getAPI(1);
-
-  const repo = api.getRepository(fileUri);
-  if (!repo) throw new Error('File is not inside a git repository');
+  const git = await getGitRepoInfo(fileUri);
 
   // Not repo.buffer(): it runs `git show --textconv`, which returns text
   // instead of the ZIP when the repository is set up for `mdz textconv`.
   try {
-    return await readGitBlob(api.git.path || 'git', 'HEAD', fileUri.fsPath);
+    return await readGitBlob(git.gitPath, 'HEAD', fileUri.fsPath);
   } catch {
     return undefined;
   }
@@ -1146,6 +1142,132 @@ export function activate(context: vscode.ExtensionContext): MdzipTestApi {
     })
   );
 
+  // "Compare Changes" for .md files: a custom text editor, so saving and the
+  // editor picker come from VS Code.
+  context.subscriptions.push(MdCompareEditorProvider.register(context));
+  MdCompareEditorProvider.revisionRedirect = (uri, panel) => MdzEditorProvider.redirectMarkdownRevision(uri, panel);
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.compareMarkdownWithSaved', async (resource?: unknown) => {
+      const fileUri = await markdownFileForCommand(resource, 'Compare with saved');
+      if (!fileUri) return;
+      try {
+        await MdCompareEditorProvider.open(fileUri, { kind: 'saved' });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Unable to compare with the saved file: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('mdzip.compareMarkdownWithFile', async (resource?: unknown) => {
+      const fileUri = await markdownFileForCommand(resource, 'Choose the file to change');
+      if (!fileUri) return;
+      const other = (await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        defaultUri: vscode.Uri.file(path.dirname(fileUri.fsPath)),
+        filters: { Markdown: ['md', 'markdown'] },
+        openLabel: 'Compare',
+        title: `Compare ${path.basename(fileUri.fsPath)} with...`,
+      }))?.[0];
+      if (!other) return;
+      try {
+        await MdCompareEditorProvider.open(fileUri, { kind: 'file', beforeFilePath: other.fsPath });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Unable to compare the files: ${message}`);
+      }
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.openMarkdownTextDiff', async (resource?: unknown) => {
+      const fileUri = resourceUriFromCommandArg(resource) ?? activeCompareUri();
+      if (!fileUri) return;
+      try {
+        await MdCompareEditorProvider.openTextDiff(fileUri);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Unable to open the text diff: ${message}`);
+      }
+    })
+  );
+
+  // Merge conflicts in an .mdz (left by the `mdz merge` driver) or an .md.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.resolveMergeConflicts', async (resource?: unknown) => {
+      const fileUri = await conflictFileForCommand(resource, 'Resolve conflicts');
+      if (!fileUri) return;
+      try {
+        await MdzMergePanel.open(fileUri, context.extensionUri);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Unable to show the merge conflicts: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('mdzip.mergeAgain', async (resource?: unknown) => {
+      const fileUri = await conflictFileForCommand(resource, 'Merge again');
+      if (!fileUri) return;
+      try {
+        await mergeAgain(fileUri, true);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Unable to merge ${path.basename(fileUri.fsPath)} again: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('mdzip.setUpMergeDriver', async (resource?: unknown) => {
+      // Any file in the repository will do: git finds the repository from its folder.
+      let fileUri = resourceUriFromCommandArg(resource) ?? activeTabFileUri();
+      if (!fileUri) {
+        const folders = vscode.workspace.workspaceFolders ?? [];
+        const folder = folders.length === 1
+          ? folders[0]
+          : await vscode.window.showWorkspaceFolderPick({ placeHolder: 'Set up the merge driver in which repository?' });
+        if (folder) fileUri = vscode.Uri.joinPath(folder.uri, '.gitattributes');
+      }
+      if (!fileUri) return;
+      try {
+        await setUpMergeDriver(fileUri);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Unable to set up the merge driver: ${message}`);
+      }
+    }),
+    registerConflictPrompt()
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdzip.compareRenderedMarkdownWithGitBase', async (resource?: unknown) => {
+      logInfo('compareRenderedMarkdownWithGitBase command invoked');
+      try {
+        let fileUri = resourceUriFromCommandArg(resource) ?? activeCompareUri();
+        if (!fileUri) {
+          const active = vscode.window.activeTextEditor?.document.uri;
+          if (active && isMarkdownUri(active)) fileUri = active;
+        }
+        if (!fileUri) {
+          fileUri = (await vscode.window.showOpenDialog({
+            canSelectMany: false,
+            filters: { Markdown: ['md', 'markdown'] },
+            openLabel: 'Compare with git base',
+          }))?.[0];
+          if (!fileUri) return;
+        }
+        if (!isMarkdownUri(fileUri)) {
+          vscode.window.showWarningMessage('Select a .md file to compare with git base.');
+          return;
+        }
+        const baseUri = originalUriFromCommandArg(resource, fileUri);
+        await openMarkdownGitDiff(context.extensionUri, {
+          filePath: fileUri.fsPath,
+          beforeFilePath: baseUri.scheme === 'file' ? baseUri.fsPath : undefined,
+        });
+        const baseName = path.basename(fileUri.fsPath);
+        logInfo('compareRenderedMarkdownWithGitBase panel opened', baseName);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`Rendered compare failed: ${msg}`);
+        logError('Rendered compare failed', err);
+      }
+    })
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('mdzip.extractToFolder', async (resource?: unknown) => {
       const fileUri = await resolveMdzFileForCommand(resource, 'Select .mdz file to extract');
@@ -2078,4 +2200,62 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 function base64ToBytes(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value, 'base64'));
+}
+
+/** The .md file a compare command is for: its argument, the active editor, or one the user picks. */
+async function markdownFileForCommand(resource: unknown, openLabel: string): Promise<vscode.Uri | undefined> {
+  let fileUri = resourceUriFromCommandArg(resource) ?? activeCompareUri();
+  if (!fileUri) {
+    const active = vscode.window.activeTextEditor?.document.uri;
+    if (active && isMarkdownUri(active)) fileUri = active;
+  }
+  if (!fileUri) {
+    fileUri = (await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      filters: { Markdown: ['md', 'markdown'] },
+      openLabel,
+    }))?.[0];
+  }
+  if (fileUri && !isMarkdownUri(fileUri)) {
+    vscode.window.showWarningMessage('Select an .md file to compare.');
+    return undefined;
+  }
+  return fileUri;
+}
+
+/** The file shown in the active tab (a text or custom editor), if any. */
+function activeTabFileUri(): vscode.Uri | undefined {
+  const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+  const uri = input instanceof vscode.TabInputCustom || input instanceof vscode.TabInputText ? input.uri : undefined;
+  return uri?.scheme === 'file' ? uri : undefined;
+}
+
+/** The `.mdz` or `.md` a merge command acts on: the one it was given, the active one, or one the user picks. */
+async function conflictFileForCommand(resource: unknown, openLabel: string): Promise<vscode.Uri | undefined> {
+  const isConflictFile = (uri: vscode.Uri) => /\.(mdz|md|markdown)$/i.test(uri.fsPath);
+  let fileUri = resourceUriFromCommandArg(resource);
+  if (!fileUri) {
+    const active = activeTabFileUri();
+    if (active && isConflictFile(active)) fileUri = active;
+  }
+  if (!fileUri) {
+    fileUri = (await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      filters: { MDZip: ['mdz'], Markdown: ['md', 'markdown'] },
+      openLabel,
+    }))?.[0];
+  }
+  if (fileUri && !isConflictFile(fileUri)) {
+    vscode.window.showWarningMessage('Select an .mdz or .md file.');
+    return undefined;
+  }
+  return fileUri;
+}
+
+/** The file of the active tab when it is a Compare Changes editor. */
+function activeCompareUri(): vscode.Uri | undefined {
+  const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+  return input instanceof vscode.TabInputCustom && input.viewType === MdCompareEditorProvider.VIEW_TYPE
+    ? input.uri
+    : undefined;
 }

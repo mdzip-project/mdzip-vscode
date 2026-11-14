@@ -2,8 +2,8 @@
 
 - Never modify upstream or sibling repositories. You may inspect them for context, but treat them as read-only.
 - If an upstream change appears warranted, stop and discuss it with the user. Create a GitHub issue when requested so the work can be coordinated and completed in the appropriate repository.
-- After every code or asset change, bump the extension patch version in `package.json` and `package-lock.json`, then rebuild the VSIX.
-- **Every VSIX rebuild gets a new version — no exceptions.** That includes rebuilds that only pick up a new `@mdzip/editor`/`@mdzip/core-js` or rebundle `media/`. VS Code won't reinstall a VSIX whose version is already installed, so re-packaging at the same number leaves the owner testing the old build.
+- After every code or asset change, rebuild the VSIX for the owner to test.
+- **Bump the version once per release, not per build.** When the current `package.json` version is already released (it has a `v<version>` tag), bump the patch version in `package.json` and `package-lock.json` before the next build; after that, test builds re-package at the same number. The owner installs each test VSIX and reloads the window to pick it up.
 - Documentation, design notes, and other non-code/non-asset changes do not require an automatic version bump or VSIX rebuild.
 - Use `npm version patch --no-git-tag-version` for the version bump unless the user asks for a different version.
 - Use `npx vsce package` to rebuild the VSIX after verification.

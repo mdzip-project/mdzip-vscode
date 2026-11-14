@@ -12,6 +12,7 @@ Visual Studio Code extension to edit MDZip (`.mdz`) files — Markdown plus its 
 - **Document title editing** - set the package title from the toolbar.
 - **Archive contents browser** - browse Markdown, text, image, and binary entries inside `.mdz` archives.
 - **Git-aware diffs** - compare document Markdown or the whole archive against Git base.
+- **Merge conflict resolution** - resolve the conflicts a Git merge leaves in an `.mdz`, one card at a time, with the MDZip merge driver.
 - **Archive extraction** - unpack an `.mdz` archive to a folder when you need loose files.
 - **Full save / Save As / Revert** - honors the standard VS Code document lifecycle.
 - **Template-based new documents** - create a fresh `.mdz` archive from built-in or custom templates using the Command Palette or folder context menu.
@@ -110,6 +111,18 @@ The tab is titled with the file's name, and the breadcrumb shows the archive and
 - **Read-only archives** (a read-only file, or a version from git) open their files read-only.
 - **Extensions that only open files on disk** can't open files inside an archive. Draw.io Integration, vscode-pdf and DOCX Viewer work; others may not.
 
+### Resolving merge conflicts
+
+Git can't merge a ZIP file, so when two branches change the same `.mdz`, a merge normally stops with a conflict and leaves your whole version in place. The MDZip merge driver, `mdz merge` from the [MDZip CLI](https://github.com/mdzip-project/mdzip-cli#installation), merges the documents inside the archive instead: changes to different parts merge cleanly, and overlapping changes get conflict markers inside that document.
+
+1. Install the MDZip CLI, then run **MDZip: Set Up the Merge Driver for .mdz Files** once in each clone. It sets up the driver in the clone's Git config and adds `*.mdz merge=mdz diff=mdz` to `.gitattributes`. Commit `.gitattributes` so the repository uses it.
+2. When a merge leaves conflicts in an `.mdz`, click it under **Merge Changes** in Source Control (or open it, or run **Resolve Merge Conflicts**). A tree lists the archive's files: ● has conflicts, ◐ needs a choice, ↺ is a choice the merge made that's worth a look, ✓ merged. For a document, Incoming (the branch you're merging in) and Current (your branch) sit side by side over the result, which you can edit, as in VS Code's own merge editor. Tick the checkbox beside a change to take it; ticking both sides of a conflict keeps both, in the order you ticked them. The panes scroll together and line up change by change (word wrap is off there so they stay level). **Take All Incoming** / **Take All Current** tick a whole side, and each conflict in the result has **Accept Incoming**, **Accept Current**, **Accept Both** and **Use Original**. An image both branches replaced gets **Take Incoming** / **Keep Current**, a file one branch deleted **Keep it** / **Delete it**, and document properties both changed **Take Incoming** / **Take Current**. Each change is saved to the file straight away.
+3. Click **Complete Merge** (`git add`), then commit the merge. If conflicts remain, it asks first.
+
+**Merge Again (Undo Conflict Resolutions)** puts the conflicts back. If Git couldn't merge the archive (the driver wasn't set up), the panel offers to keep your version or theirs, compare the two, or set up the driver and merge again. The panel works for a conflicted `.md` file too.
+
+GitHub's and Azure DevOps' merge buttons don't run the driver, so merge branches that both changed an `.mdz` on your machine.
+
 ### Troubleshooting image rendering
 
 If a Markdown image does not render in Preview, verify that the Markdown path exactly matches an image path inside the archive, including filename and extension. The renderer resolves archive-relative paths exactly.
@@ -136,6 +149,13 @@ Open **Settings** and search for `mdzip`, or add these to `settings.json`:
 - `MDZip: Compare Markdown`
 - `MDZip: Compare Document Markdown with Git Base`
 - `MDZip: Compare Archive Contents with Git Base`
+- `MDZip: Compare Rendered Markdown with Git Base` (for `.md` files)
+- `MDZip: Compare Markdown with Saved` (an `.md` file's unsaved edits against the file on disk; no Git needed)
+- `MDZip: Compare Markdown with File...` (an `.md` file against any other `.md` file)
+- `MDZip: Open Text Diff` (title-bar button in the Compare Changes editor: VS Code's text diff of the same two versions)
+- `MDZip: Resolve Merge Conflicts` (an `.mdz` or `.md` a Git merge left conflicted)
+- `MDZip: Set Up the Merge Driver for .mdz Files`
+- `MDZip: Merge Again (Undo Conflict Resolutions)`
 - `MDZip: Copy MCP Server Config Snippet`
 - `MDZip: Enable Workspace MCP Server`
 - `MDZip: Enable User MCP Server`

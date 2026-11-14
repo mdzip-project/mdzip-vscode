@@ -2,7 +2,7 @@
   "name": "mdzip-vscode",
   "displayName": "MDZip Editor",
   "description": "Edit MDZip (.mdz) files in single document mode — Markdown plus its images in one portable file — with live preview. Also opens plain Markdown (.md) files in the same editor via Open With.",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "icon": "media/icons/mdzip-marketplace-icon.png",
   "publisher": "mdzip-project",
   "license": "Apache-2.0",
@@ -493,6 +493,16 @@
           }
         ],
         "priority": "option"
+      },
+      {
+        "viewType": "mdzip.mdCompare",
+        "displayName": "Compare Changes",
+        "selector": [
+          {
+            "filenamePattern": "*.md"
+          }
+        ],
+        "priority": "option"
       }
     ],
     "commands": [
@@ -535,6 +545,36 @@
       {
         "command": "mdzip.compareArchiveWithGitBase",
         "title": "MDZip: Compare Archive Contents with Git Base"
+      },
+      {
+        "command": "mdzip.compareRenderedMarkdownWithGitBase",
+        "title": "MDZip: Compare Rendered Markdown with Git Base"
+      },
+      {
+        "command": "mdzip.compareMarkdownWithSaved",
+        "title": "MDZip: Compare Markdown with Saved"
+      },
+      {
+        "command": "mdzip.compareMarkdownWithFile",
+        "title": "MDZip: Compare Markdown with File..."
+      },
+      {
+        "command": "mdzip.resolveMergeConflicts",
+        "title": "MDZip: Resolve Merge Conflicts",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "mdzip.setUpMergeDriver",
+        "title": "MDZip: Set Up the Merge Driver for .mdz Files"
+      },
+      {
+        "command": "mdzip.mergeAgain",
+        "title": "MDZip: Merge Again (Undo Conflict Resolutions)"
+      },
+      {
+        "command": "mdzip.openMarkdownTextDiff",
+        "title": "MDZip: Open Text Diff",
+        "icon": "$(git-compare)"
       },
       {
         "command": "mdzip.copyMcpConfigSnippet",
@@ -675,6 +715,22 @@
           "command": "mdzip.compareArchiveWithGitBase"
         },
         {
+          "command": "mdzip.resolveMergeConflicts"
+        },
+        {
+          "command": "mdzip.setUpMergeDriver"
+        },
+        {
+          "command": "mdzip.mergeAgain"
+        },
+        {
+          "command": "mdzip.compareRenderedMarkdownWithGitBase"
+        },
+        {
+          "command": "mdzip.openMarkdownTextDiff",
+          "when": "activeCustomEditorId == mdzip.mdCompare"
+        },
+        {
           "command": "mdzip.copyMcpConfigSnippet"
         },
         {
@@ -750,6 +806,21 @@
           "group": "1_mdzip@14"
         },
         {
+          "command": "mdzip.compareRenderedMarkdownWithGitBase",
+          "when": "resourceExtname == .md",
+          "group": "1_mdzip@14"
+        },
+        {
+          "command": "mdzip.compareMarkdownWithSaved",
+          "when": "resourceExtname == .md",
+          "group": "1_mdzip@14"
+        },
+        {
+          "command": "mdzip.compareMarkdownWithFile",
+          "when": "resourceExtname == .md",
+          "group": "1_mdzip@14"
+        },
+        {
           "command": "mdzip.extractToFolder",
           "when": "resourceExtname == .mdz",
           "group": "1_mdzip@15"
@@ -775,6 +846,26 @@
           "command": "mdzip.addAgentsGuide",
           "when": "resourceExtname == .mdz",
           "group": "navigation"
+        },
+        {
+          "command": "mdzip.openMarkdownTextDiff",
+          "when": "activeCustomEditorId == mdzip.mdCompare",
+          "group": "navigation"
+        },
+        {
+          "command": "mdzip.compareRenderedMarkdownWithGitBase",
+          "when": "activeCustomEditorId == mdzip.mdCompare",
+          "group": "1_compare@1"
+        },
+        {
+          "command": "mdzip.compareMarkdownWithSaved",
+          "when": "activeCustomEditorId == mdzip.mdCompare",
+          "group": "1_compare@2"
+        },
+        {
+          "command": "mdzip.compareMarkdownWithFile",
+          "when": "activeCustomEditorId == mdzip.mdCompare",
+          "group": "1_compare@3"
         }
       ],
       "editor/title/context": [
@@ -793,6 +884,18 @@
         {
           "command": "mdzip.compareArchiveWithGitBase",
           "when": "resourceExtname == .mdz"
+        },
+        {
+          "command": "mdzip.compareRenderedMarkdownWithGitBase",
+          "when": "resourceExtname == .md"
+        },
+        {
+          "command": "mdzip.compareMarkdownWithSaved",
+          "when": "resourceExtname == .md"
+        },
+        {
+          "command": "mdzip.compareMarkdownWithFile",
+          "when": "resourceExtname == .md"
         },
         {
           "command": "mdzip.extractToFolder",
@@ -857,6 +960,21 @@
       ],
       "scm/resourceState/context": [
         {
+          "command": "mdzip.resolveMergeConflicts",
+          "when": "scmProvider == git && scmResourceGroup == merge",
+          "group": "3_mdzip@0"
+        },
+        {
+          "command": "mdzip.mergeAgain",
+          "when": "scmProvider == git && scmResourceGroup == merge",
+          "group": "3_mdzip@4"
+        },
+        {
+          "command": "mdzip.setUpMergeDriver",
+          "when": "scmProvider == git && scmResourceGroup == merge",
+          "group": "3_mdzip@5"
+        },
+        {
           "command": "mdzip.compareWithGitBase",
           "when": "scmProvider == git",
           "group": "3_mdzip@1"
@@ -865,6 +983,11 @@
           "command": "mdzip.compareArchiveWithGitBase",
           "when": "scmProvider == git",
           "group": "3_mdzip@2"
+        },
+        {
+          "command": "mdzip.compareRenderedMarkdownWithGitBase",
+          "when": "scmProvider == git && resourceExtname == .md",
+          "group": "3_mdzip@3"
         }
       ]
     },
@@ -953,11 +1076,12 @@
   "scripts": {
     "vscode:prepublish": "npm run bundle",
     "package": "node -e \"const fs=require('fs');fs.mkdirSync('build',{recursive:true});for(const f of fs.readdirSync('build'))if(f.endsWith('.vsix'))fs.rmSync('build/'+f)\" && npx --yes vsce package --out build/ --no-dependencies && node -e \"console.log('VSIX written to '+require('path').resolve('build'))\"",
-    "bundle": "npm run bundle:extension && npm run bundle:webview && npm run bundle:worker && npm run bundle:diff-webview && npm run bundle:mcp",
+    "bundle": "npm run bundle:extension && npm run bundle:webview && npm run bundle:worker && npm run bundle:diff-webview && npm run bundle:merge-webview && npm run bundle:mcp",
     "bundle:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --alias:jsdom=./src/jsdomStub.js --format=cjs --platform=node --minify",
     "bundle:webview": "esbuild src/webviewEditor.ts --bundle --outfile=media/editor.bundle.js --format=iife --platform=browser --minify",
     "bundle:worker": "node scripts/copy-worker-asset.mjs",
     "bundle:diff-webview": "esbuild src/webviewDiff.ts --bundle --outfile=media/diff.bundle.js --format=iife --platform=browser --minify",
+    "bundle:merge-webview": "esbuild src/webviewMerge.ts --bundle --outfile=media/merge.bundle.js --format=iife --platform=browser --minify",
     "bundle:mcp": "esbuild src/mdzMcpServer.ts --bundle --outfile=dist/mdz-mcp-server.js --format=cjs --platform=node --minify",
     "test:editor": "npm --prefix ../mdzip-editor/packages/editor test",
     "test:mcp-smoke": "npm run bundle:mcp && node tests/mcp-smoke.cjs",
@@ -977,8 +1101,10 @@
     "compile:integration": "tsc -p tsconfig.integration.json",
     "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --alias:jsdom=./src/jsdomStub.js --format=cjs --platform=node --watch",
     "lint": "eslint src --ext ts",
-    "test": "npm run test:editor && npm run test:mcp-smoke && npm run test:document && npm run test:templates && npm run test:editor-provider && npm run test:stats && npm run test:linked-image && npm run test:git-blob",
-    "test:integration": "npm run bundle && npm run compile:integration && node dist/integration/runTests.js"
+    "test": "npm run test:editor && npm run test:mcp-smoke && npm run test:document && npm run test:templates && npm run test:editor-provider && npm run test:stats && npm run test:linked-image && npm run test:git-blob && npm run test:merge-panel",
+    "test:integration": "npm run bundle && npm run compile:integration && node dist/integration/runTests.js",
+    "bundle:test-merge-panel": "esbuild src/mdzMergePanel.ts --bundle --outfile=dist/test/mdzMergePanel.cjs --alias:vscode=./tests/vscode-mock.cjs --alias:jsdom=./src/jsdomStub.js --format=cjs --platform=node",
+    "test:merge-panel": "npm run bundle:test-merge-panel && node --test tests/mdzMergePanel.test.cjs"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

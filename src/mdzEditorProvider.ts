@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { MdzDocument, MdzDiskConflictError } from './mdzDocument';
 import { MdzDiffPanel } from './mdzDiffPanel';
+import { openMarkdownGitDiff } from './mdGitDiff';
+import { newerRef } from './mdGitSource';
 import { logInfo, logError } from './mdzLog';
 import { readArchiveBytes } from './mdzBytes';
 import { MdzStatsStatusBar } from './mdzStatsStatusBar';
@@ -354,7 +356,7 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
 
     if (
       webviewPanel.viewType === MdzEditorProvider.MARKDOWN_VIEW_TYPE
-      && document.uri.scheme === 'git'
+      && (document.uri.scheme === 'git' || document.uri.scheme === 'gitlens')
       && this._redirectMarkdownGitDiff(document.uri, webviewPanel)
     ) {
       return;
@@ -1434,11 +1436,24 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
     await vscode.commands.executeCommand('vscode.openWith', targetUri, MdzEditorProvider.VIEW_TYPE);
   }
 
+  /**
+   * A git or GitLens version of an .md that opened in another MDZip editor
+   * (Compare Changes, as one side of a diff): open the comparison in its place.
+   */
+  public static redirectMarkdownRevision(uri: vscode.Uri, webviewPanel: vscode.WebviewPanel): boolean {
+    const provider = MdzEditorProvider._instance;
+    return Boolean(
+      provider
+      && (uri.scheme === 'git' || uri.scheme === 'gitlens')
+      && provider._redirectMarkdownGitDiff(uri, webviewPanel)
+    );
+  }
+
   private _redirectMarkdownGitDiff(
     uri: vscode.Uri,
     webviewPanel: vscode.WebviewPanel
   ): boolean {
-    const gitInput = parseGitInput(uri);
+    const gitInput = parseRevisionInput(uri);
     if (!gitInput || !/\.md$/i.test(gitInput.path)) {
       return false;
     }
@@ -1454,18 +1469,24 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       this._pendingMarkdownGitDiffs.set(key, pending);
     }
 
-    pending.inputs.set(uri.toString(), { uri, ref: gitInput.ref });
+    pending.inputs.set(uri.toString(), { uri, ref: gitInput.ref, path: gitInput.path });
     pending.panels.add(webviewPanel);
     if (pending.timer) {
       clearTimeout(pending.timer);
     }
     pending.timer = setTimeout(() => {
-      void this._openBuiltInMarkdownGitDiff(key);
+      void this._openRenderedMarkdownGitDiff(key);
     }, 200);
     return true;
   }
 
-  private async _openBuiltInMarkdownGitDiff(key: string): Promise<void> {
+  /**
+   * A git diff of an .md that opened in the MDZip Markdown editor: show it in
+   * the MDZip diff panel, rendered (its # button gives the source diff).
+   * VS Code opens one custom editor per side; both arrive here and are
+   * collected first.
+   */
+  private async _openRenderedMarkdownGitDiff(key: string): Promise<void> {
     const pending = this._pendingMarkdownGitDiffs.get(key);
     if (!pending) {
       return;
@@ -1479,41 +1500,70 @@ export class MdzEditorProvider implements vscode.CustomEditorProvider<MdzDocumen
       this._documentsByUri.delete(input.uri.toString());
     }
 
+    // Working changes: index ('~') vs the file. Staged: HEAD vs index (''),
+    // so the '' side is the newer one. Two commits (GitLens "Open Changes
+    // with Revision"): the newer commit. A lone git side is compared with
+    // the working tree, or with HEAD when it's the index.
     const inputs = [...pending.inputs.values()];
-    const rightInput = inputs.find(input => input.ref === '');
-    const leftInput = inputs.find(input => input !== rightInput);
-    const onlyInput = inputs.length === 1 ? inputs[0] : undefined;
-    const leftUri = onlyInput?.ref === ''
-      ? gitUriWithRef(onlyInput.uri, 'HEAD')
-      : leftInput?.uri ?? onlyInput?.uri;
-    const rightUri = rightInput?.uri ?? vscode.Uri.file(pending.filePath);
-    if (!leftUri) {
-      return;
+    let newer = inputs.find(input => input.ref === '');
+    if (!newer && inputs.length === 2) {
+      try {
+        const newest = await newerRef(vscode.Uri.file(pending.filePath), inputs[0].ref, inputs[1].ref);
+        newer = inputs.find(input => input.ref === newest);
+      } catch {
+        newer = inputs[1];
+      }
     }
+    const older = inputs.find(input => input !== newer);
+    const onlyInput = inputs.length === 1 ? inputs[0] : undefined;
+    const beforeRef = onlyInput?.ref === '' ? 'HEAD' : (older?.ref ?? 'HEAD');
+    const afterRef = newer?.ref;
+    const beforeFilePath = older && older.path !== pending.filePath ? older.path : undefined;
 
+    // Close the diff tab VS Code opened (its git side was just disposed), in
+    // whichever group it is: when VS Code restores editors at startup it
+    // needn't be the active one.
     await new Promise(resolve => setTimeout(resolve, 0));
-    const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
-    if (
-      activeTab
-      && activeTab.input === undefined
-      && activeTab.label.toLowerCase().includes(path.basename(pending.filePath).toLowerCase())
-    ) {
-      await vscode.window.tabGroups.close(activeTab);
+    const fileName = path.basename(pending.filePath).toLowerCase();
+    const leftovers = vscode.window.tabGroups.all
+      .flatMap(group => group.tabs)
+      .filter(tab => {
+        if (tab.input instanceof vscode.TabInputTextDiff) {
+          return normalizeFileSystemPath(tab.input.modified.fsPath) === key;
+        }
+        return tab.input === undefined && tab.label.toLowerCase().includes(fileName);
+      });
+    if (leftovers.length) {
+      await vscode.window.tabGroups.close(leftovers);
     }
 
     try {
-      // Stable VS Code does not expose the customEditorPriority proposal. The
-      // workbench command's default override keeps Git diffs in the text editor.
-      await vscode.commands.executeCommand(
-        '_workbench.diff',
-        leftUri,
-        rightUri,
-        `${path.basename(pending.filePath)} (Changes)`,
-        [vscode.ViewColumn.Active, { preview: true, override: 'default' }]
-      );
+      await openMarkdownGitDiff(this.context.extensionUri, {
+        filePath: pending.filePath,
+        beforeFilePath,
+        beforeRef,
+        afterRef,
+      });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      vscode.window.showErrorMessage(`Unable to open the Markdown text diff: ${message}`);
+      // Don't leave a half-open diff: fall back to VS Code's text diff.
+      logError('Rendered Markdown diff failed; opening the text diff', error);
+      const leftUri = older?.uri
+        ?? (onlyInput?.uri.scheme === 'git' ? gitUriWithRef(onlyInput.uri, 'HEAD') : undefined);
+      const rightUri = newer?.uri ?? vscode.Uri.file(pending.filePath);
+      if (!leftUri) return;
+      try {
+        // The default override keeps it in the text diff editor, not ours.
+        await vscode.commands.executeCommand(
+          '_workbench.diff',
+          leftUri,
+          rightUri,
+          `${path.basename(pending.filePath)} (Changes)`,
+          [vscode.ViewColumn.Active, { preview: true, override: 'default' }]
+        );
+      } catch (fallbackError) {
+        const message = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        vscode.window.showErrorMessage(`Unable to open the Markdown diff: ${message}`);
+      }
     }
   }
 
@@ -2031,7 +2081,7 @@ type LayoutMode = EditorMode | 'split';
 
 interface PendingMarkdownGitDiff {
   filePath: string;
-  inputs: Map<string, { uri: vscode.Uri; ref: string }>;
+  inputs: Map<string, { uri: vscode.Uri; ref: string; path: string }>;
   panels: Set<vscode.WebviewPanel>;
   timer?: ReturnType<typeof setTimeout>;
 }
@@ -2053,6 +2103,26 @@ function parseGitInput(uri: vscode.Uri): { path: string; ref: string } | undefin
       return undefined;
     }
     return { path: query.path, ref: query.ref };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A version of a file from VS Code's Git extension (`git:`, its ref in the
+ * query: '' or '~' for the index) or from GitLens (`gitlens:`, its ref and
+ * repository as hex-encoded JSON in the authority; the all-zero hash plus ':'
+ * is the index). The working file itself isn't one.
+ */
+function parseRevisionInput(uri: vscode.Uri): { path: string; ref: string } | undefined {
+  if (uri.scheme === 'git') return parseGitInput(uri);
+  if (uri.scheme !== 'gitlens') return undefined;
+  try {
+    const meta = JSON.parse(Buffer.from(uri.authority, 'hex').toString('utf8')) as { ref?: unknown };
+    if (typeof meta.ref !== 'string' || !meta.ref) return undefined;
+    if (/^0{40}$/.test(meta.ref)) return undefined;
+    const ref = /^0{40}:$/.test(meta.ref) ? '' : meta.ref;
+    return { path: vscode.Uri.file(uri.path).fsPath, ref };
   } catch {
     return undefined;
   }
